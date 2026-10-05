@@ -48,10 +48,10 @@ jobs:
           echo "==> 产物"
           ls -la ../app/src/main/jniLibs/arm64-v8a/
           file ../app/src/main/jniLibs/arm64-v8a/libtrae2api.so || true
-          SIZE=$(stat -c%s ../app/src/main/jniLibs/arm64-v8a/libtrae2api.so)
-          echo "relay binary size: $SIZE bytes"
-          if [ "$SIZE" -lt 1000000 ]; then
-            echo "::error::二进制过小（$SIZE B），疑似编译失败"
+          SIZE=$(stat -c%s ../app/src/main/jniLibs/arm64-v8a/libtrae2api.so 2>/dev/null || echo 0)
+          echo "relay binary size: ${SIZE} bytes"
+          if [ "${SIZE}" -lt 1000000 ]; then
+            echo "::error::二进制过小（${SIZE} B），疑似编译失败"
             exit 1
           fi
 
@@ -67,6 +67,21 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # runner 上的 aapt2 偶尔缺失（AGP 会去 maven 拉，网络抖动就失败，
+      # 报 "Specified AAPT2 executable does not exist: /opt/aapt2-shim/aapt2"）。
+      # 显式预取到 Gradle 缓存，避免这一步成为构建的不稳定因素。
+      - name: Pre-fetch Android build tools
+        run: |
+          for i in 1 2 3; do
+            if gradle :app:help --no-daemon -q >/dev/null 2>&1; then
+              echo "Gradle 预热成功"; break
+            fi
+            echo "第 $i 次预热失败，重试…"
+            sleep 5
+          done
+          echo "AAPT2 缓存位置："
+          find ~/.gradle/caches -name 'aapt2*' -maxdepth 8 2>/dev/null | head -5 || true
+
       - name: Show Android SDK
         run: |
           echo "ANDROID_HOME=${ANDROID_HOME:-未设置}"
@@ -74,7 +89,31 @@ jobs:
           ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}" 2>/dev/null | head
 
       - name: Build APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: |
+          set +e
+          for i in 1 2 3; do
+            echo "═══ 构建尝试 $i ═══"
+            log="build-$i.log"
+            gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$log"
+            code=${PIPESTATUS[0]}
+            if [ "$code" -eq 0 ]; then
+              echo "构建成功"
+              exit 0
+            fi
+            echo "尝试 $i 失败（退出码 $code）"
+            if grep -q "AAPT2 executable does not exist" "$log" 2>/dev/null; then
+              echo "检测到 AAPT2 缺失，清理相关缓存后重试"
+              rm -rf "$HOME"/.gradle/caches/transforms-* 2>/dev/null || true
+              find "$HOME"/.gradle/caches -path '*aapt2*' -maxdepth 8 -exec rm -rf {} + 2>/dev/null || true
+            fi
+            sleep 8
+          done
+          echo "::error::三次构建均失败"
+          echo "=== 环境诊断 ==="
+          echo "ANDROID_HOME=${ANDROID_HOME:-未设置}"
+          ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" 2>/dev/null | tail -3
+          find / -name 'aapt2' -type f 2>/dev/null | head -3
+          exit 1
 
       - name: Collect APK
         run: |
