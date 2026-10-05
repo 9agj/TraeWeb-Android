@@ -16,9 +16,14 @@ android {
     }
 
     buildTypes {
+        // 统一用 debug 构建：CI 环境没有 debug.keystore 时 assembleRelease 会静默产出
+        // 未签名的 APK（装不上）；assembleDebug 由 AGP 自动生成 keystore 并签名，最可靠。
+        debug {
+            // 不加 applicationIdSuffix，保持与 release 同包名，便于覆盖安装
+            minifyEnabled false
+        }
         release {
             minifyEnabled false
-            // 用 debug 签名，便于直接安装（本项目是个人自用壳应用，不发布到商店）
             signingConfig signingConfigs.debug
         }
     }

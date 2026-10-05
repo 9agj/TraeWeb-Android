@@ -39,8 +39,8 @@ jobs:
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-未设置}"
           ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}" 2>/dev/null | head
 
-      - name: Build Release APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Collect APK
         run: |
@@ -48,8 +48,14 @@ jobs:
           find app/build/outputs/apk -name '*.apk' -type f | while read -r f; do
             echo "found: $f"
           done
-          cp app/build/outputs/apk/release/app-release.apk out/TraeWeb.apk
+          cp app/build/outputs/apk/debug/app-debug.apk out/TraeWeb.apk
           ls -la out/
+          # 校验签名（未签名的 APK 无法安装）
+          if unzip -l out/TraeWeb.apk | grep -qE 'META-INF/.*\.(RSA|DSA|EC|SF)'; then
+            echo "✓ APK 已签名"
+          else
+            echo "✗ APK 未签名"; exit 1
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
