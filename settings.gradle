@@ -12,5 +12,28 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
+
+/*
+ * arm64 主机 workaround。
+ *
+ * Android SDK / AGP 自带的 aapt2 是 x86-64 二进制，在 arm64 机器上要靠
+ * qemu-user 转译（本机 shim 在 /opt/aapt2-shim/aapt2）。
+ *
+ * 实现方式：在 settings 阶段判断 shim 是否存在，存在就把它写进
+ * gradle.properties 同名属性 —— AGP 在 configuration 阶段才读这个值，
+ * 此处的赋值时机足够早。
+ *
+ * 不能在 gradle.properties 里写死：x86-64 的 CI runner 没有这个路径，
+ * 会直接报 "Specified AAPT2 executable does not exist"。
+ */
+def aapt2Shim = new File('/opt/aapt2-shim/aapt2')
+if (aapt2Shim.exists() && aapt2Shim.canExecute()) {
+    gradle.ext.aapt2ShimPath = aapt2Shim.absolutePath
+    System.setProperty('android.aapt2FromMavenOverride', aapt2Shim.absolutePath)
+    logger.lifecycle("[arm64] 检测到 aapt2 shim，启用：${aapt2Shim.absolutePath}")
+} else {
+    logger.lifecycle("[arm64] 未检测到 aapt2 shim，使用 AGP 自带的 aapt2")
+}
+
 rootProject.name = "TraeWeb"
 include ':app'
