@@ -21,22 +21,17 @@ android {
             // 用 debug 签名，便于直接安装（本项目是个人自用壳应用，不发布到商店）
             signingConfig signingConfigs.debug
         }
-        debug {
-            applicationIdSuffix ".debug"
-        }
     }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-
-    packagingOptions {
-        resources.excludes += ['META-INF/*']
-    }
 }
 
+// 刻意不引入任何第三方依赖：
+//   本壳只用系统 API（Activity / WebView / AlertDialog），
+//   appcompat 与 webkit 会各自带入不同版本的 kotlin-stdlib，导致
+//   checkReleaseDuplicateClasses 失败（Duplicate class ... CollectionsJDK8Kt）。
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.webkit:webkit:1.11.0'
 }

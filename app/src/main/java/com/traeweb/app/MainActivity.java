@@ -1,13 +1,13 @@
 package com.traeweb.app;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -29,7 +29,6 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.appcompat.app.AppCompatActivity;
 
 /**
  * TraeWeb 的原生外壳。
@@ -40,7 +39,7 @@ import androidx.appcompat.app.AppCompatActivity;
  * 注意：本应用**不自带** Node 服务，服务运行在 DSHA 容器内。
  * 若容器没启动，会显示错误页并提供「修改地址 / 重试」入口。
  */
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
 
     private static final String PREF = "traeweb_prefs";
     private static final String KEY_URL = "access_url";
