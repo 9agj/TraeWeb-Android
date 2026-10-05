@@ -50,11 +50,26 @@ jobs:
           done
           cp app/build/outputs/apk/debug/app-debug.apk out/TraeWeb.apk
           ls -la out/
-          # 校验签名（未签名的 APK 无法安装）
-          if unzip -l out/TraeWeb.apk | grep -qE 'META-INF/.*\.(RSA|DSA|EC|SF)'; then
-            echo "✓ APK 已签名"
+
+      # 注意：AGP 8.x 默认只写 APK Signature Scheme v2/v3（存放在 ZIP 的签名块里），
+      # 不再生成 META-INF/*.RSA，所以不能用 unzip -l 判断签名。
+      - name: Verify APK signature
+        run: |
+          APK=out/TraeWeb.apk
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          APKSIGNER=$(find "$SDK/build-tools" -name apksigner 2>/dev/null | sort -rV | head -1 || true)
+          if [ -n "$APKSIGNER" ]; then
+            echo "使用 $APKSIGNER"
+            "$APKSIGNER" verify --verbose --print-certs "$APK"
+            echo "✓ 签名校验通过"
           else
-            echo "✗ APK 未签名"; exit 1
+            echo "apksigner 不可用，退化为签名块检测"
+            if grep -qa "APK Sig Block 42" "$APK" \
+               || unzip -l "$APK" | grep -qE 'META-INF/.*\.(RSA|DSA|EC|SF)'; then
+              echo "✓ 检测到签名"
+            else
+              echo "✗ 未检测到签名"; exit 1
+            fi
           fi
 
       - name: Upload APK artifact
