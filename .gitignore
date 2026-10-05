@@ -19,3 +19,5 @@ Thumbs.db
 out/
 *.apk
 *.keystore
+# 固定签名文件需随仓库提交（个人自用），故不忽略 *.p12
+!keystore/traeweb.p12

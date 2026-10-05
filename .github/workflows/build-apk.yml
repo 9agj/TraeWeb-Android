@@ -40,7 +40,7 @@ jobs:
           ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}" 2>/dev/null | head
 
       - name: Build APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Collect APK
         run: |
@@ -48,7 +48,7 @@ jobs:
           find app/build/outputs/apk -name '*.apk' -type f | while read -r f; do
             echo "found: $f"
           done
-          cp app/build/outputs/apk/debug/app-debug.apk out/TraeWeb.apk
+          cp app/build/outputs/apk/release/app-release.apk out/TraeWeb.apk
           ls -la out/
 
       # 注意：AGP 8.x 默认只写 APK Signature Scheme v2/v3（存放在 ZIP 的签名块里），

@@ -29,21 +29,23 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-
 /**
  * TraeWeb 的原生外壳。
  *
- * 只做一件事：把容器里跑的 TraeWeb 服务（默认 127.0.0.1:8790）用全屏 WebView 包起来，
- * 免去每次开浏览器、输地址、输 token 的麻烦。
+ * 把容器里跑的 TraeWeb 服务用全屏 WebView 包起来，免去每次开浏览器输地址的麻烦。
  *
- * 注意：本应用**不自带** Node 服务，服务运行在 DSHA 容器内。
- * 若容器没启动，会显示错误页并提供「修改地址 / 重试」入口。
+ * 配置模型（v1.1 起）：**地址与令牌分开存**
+ *   - base_url : 服务地址，如 http://127.0.0.1:8790/
+ *   - token    : 访问令牌，加载时自动拼到 URL 上
+ *   这样换网络只改地址，令牌不用重填；也兼容直接粘贴带 ?token= 的完整 URL。
+ *
+ * 改配置入口：**长按返回键**（避免配置错了却进不去设置）。
  */
 public class MainActivity extends Activity {
 
     private static final String PREF = "traeweb_prefs";
-    private static final String KEY_URL = "access_url";
-    /** 默认地址：容器与手机共享网络栈，因此本机回环即可直达 */
+    private static final String KEY_URL = "base_url";
+    private static final String KEY_TOKEN = "access_token";
     private static final String DEFAULT_URL = "http://127.0.0.1:8790/";
 
     private WebView webView;
@@ -57,15 +59,30 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREF, Context.MODE_PRIVATE);
-
         buildUi();
 
-        currentUrl = prefs.getString(KEY_URL, null);
-        if (currentUrl == null || currentUrl.trim().isEmpty()) {
+        String url = buildUrl();
+        if (url == null) {
             showSettingsDialog(true);
         } else {
-            loadUrl(currentUrl);
+            loadUrl(url);
         }
+    }
+
+    /* ------------------------------------------------------------ URL 组装 */
+
+    /** 把 base_url 与 token 拼成最终地址；未配置返回 null。 */
+    private String buildUrl() {
+        String base = prefs.getString(KEY_URL, null);
+        if (base == null || base.trim().isEmpty()) return null;
+        base = base.trim();
+        if (!base.startsWith("http://") && !base.startsWith("https://")) {
+            base = "http://" + base;
+        }
+        String token = prefs.getString(KEY_TOKEN, "");
+        if (token == null || token.trim().isEmpty()) return base;
+        if (base.contains("token=")) return base; // URL 已自带令牌
+        return base + (base.contains("?") ? "&" : "?") + "token=" + token.trim();
     }
 
     /* ------------------------------------------------------------ UI */
@@ -88,11 +105,10 @@ public class MainActivity extends Activity {
         progressBar.setVisibility(View.GONE);
         root.addView(progressBar);
 
-        // 错误页
         errorView = new LinearLayout(this);
         errorView.setOrientation(LinearLayout.VERTICAL);
         errorView.setGravity(Gravity.CENTER);
-        errorView.setPadding(dp(32), dp(32), dp(32), dp(32));
+        errorView.setPadding(dp(28), dp(28), dp(28), dp(28));
         errorView.setBackgroundColor(Color.parseColor("#0a0c10"));
         errorView.setVisibility(View.GONE);
 
@@ -107,7 +123,7 @@ public class MainActivity extends Activity {
         errorDetail.setTextColor(Color.parseColor("#7b8494"));
         errorDetail.setTextSize(13f);
         errorDetail.setGravity(Gravity.CENTER);
-        errorDetail.setPadding(0, dp(12), 0, dp(24));
+        errorDetail.setPadding(0, dp(12), 0, dp(22));
         errorView.addView(errorDetail);
 
         Button retry = new Button(this);
@@ -115,12 +131,12 @@ public class MainActivity extends Activity {
         retry.setOnClickListener(v -> {
             errorView.setVisibility(View.GONE);
             webView.setVisibility(View.VISIBLE);
-            loadUrl(currentUrl);
+            loadUrl(buildUrl());
         });
         errorView.addView(retry);
 
         Button config = new Button(this);
-        config.setText("修改地址");
+        config.setText("修改配置");
         config.setOnClickListener(v -> showSettingsDialog(false));
         errorView.addView(config);
 
@@ -143,11 +159,9 @@ public class MainActivity extends Activity {
         s.setSupportZoom(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        s.setUserAgentString(s.getUserAgentString() + " TraeWebShell/1.0");
+        s.setUserAgentString(s.getUserAgentString() + " TraeWebShell/1.1");
 
-        // 保留浏览器 Cookie（访问令牌靠它记住），但不启用第三方 Cookie
-        CookieManager cm = CookieManager.getInstance();
-        cm.setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptCookie(true);
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -158,11 +172,11 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 progressBar.setVisibility(View.GONE);
+                detectAuthFailure(view);
             }
 
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                // 只关心主文档错误，忽略子资源失败
                 if (request != null && request.isForMainFrame()) {
                     showError(String.valueOf(error.getDescription()));
                 }
@@ -171,7 +185,6 @@ public class MainActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
-                // 站外链接交给系统浏览器
                 if (!String.valueOf(uri).startsWith(baseOrigin(currentUrl))) {
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, uri));
@@ -183,12 +196,27 @@ public class MainActivity extends Activity {
         });
     }
 
+    /**
+     * 检测是否落到服务端的 401 页（页面里有 meta[name=traeweb-auth]）。
+     * 命中则提示用户：令牌不对，且告知改配置的入口。
+     */
+    private void detectAuthFailure(WebView view) {
+        view.evaluateJavascript(
+                "(function(){try{return document.querySelector('meta[name=\"traeweb-auth\"]')?'1':'0';}catch(e){return '0';}})()",
+                value -> {
+                    if (value != null && value.contains("1")) {
+                        Toast.makeText(MainActivity.this,
+                                "访问令牌无效 —— 长按返回键可修改配置", Toast.LENGTH_LONG).show();
+                    }
+                });
+    }
+
     private static String baseOrigin(String url) {
         try {
             Uri u = Uri.parse(url);
             return u.getScheme() + "://" + u.getHost() + (u.getPort() > 0 ? ":" + u.getPort() : "");
         } catch (Exception e) {
-            return url;
+            return url == null ? "" : url;
         }
     }
 
@@ -201,46 +229,64 @@ public class MainActivity extends Activity {
     }
 
     private void loadUrl(String url) {
-        if (url == null || url.trim().isEmpty()) return;
-        String u = url.trim();
-        if (!u.startsWith("http://") && !u.startsWith("https://")) {
-            u = "http://" + u;
+        if (url == null || url.trim().isEmpty()) {
+            showSettingsDialog(true);
+            return;
         }
-        currentUrl = u;
+        currentUrl = url.trim();
         errorView.setVisibility(View.GONE);
         webView.setVisibility(View.VISIBLE);
-        webView.loadUrl(u);
+        webView.loadUrl(currentUrl);
     }
 
-    /* -------------------------------------------------------- 设置对话框 */
+    /* -------------------------------------------------------- 配置对话框 */
 
     private void showSettingsDialog(boolean firstRun) {
-        EditText input = new EditText(this);
-        input.setInputType(InputType.TYPE_TEXT_VARIATION_URI | InputType.TYPE_CLASS_TEXT);
-        input.setText(prefs.getString(KEY_URL, DEFAULT_URL));
-        input.setSelectAllOnFocus(true);
-        input.setTextSize(14f);
-
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(20), dp(8), dp(20), 0);
 
         TextView tip = new TextView(this);
-        tip.setText("填入 TraeWeb 服务地址。\n\n· 手机本机：http://127.0.0.1:8790/?token=你的令牌\n"
-                + "· 局域网 ：http://192.168.x.x:8790/?token=你的令牌\n\n"
-                + "带一次 ?token= 之后浏览器会记住，之后可只填 http://127.0.0.1:8790/");
+        tip.setText("服务地址：TraeWeb 跑在哪里。\n"
+                + "访问令牌：只填一次，之后自动带上，换网也不用重填。\n\n"
+                + "查看令牌：bash /root/traeweb/info.sh");
         tip.setTextSize(12.5f);
         tip.setTextColor(Color.parseColor("#a8b0bd"));
         box.addView(tip);
 
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ilp.topMargin = dp(14);
-        input.setLayoutParams(ilp);
-        box.addView(input);
+        TextView l1 = new TextView(this);
+        l1.setText("服务地址");
+        l1.setTextSize(12f);
+        l1.setTextColor(Color.parseColor("#7b8494"));
+        l1.setPadding(0, dp(14), 0, dp(4));
+        box.addView(l1);
+
+        EditText inUrl = new EditText(this);
+        inUrl.setInputType(InputType.TYPE_TEXT_VARIATION_URI | InputType.TYPE_CLASS_TEXT);
+        String savedUrl = prefs.getString(KEY_URL, "");
+        if (savedUrl == null || savedUrl.isEmpty()) savedUrl = DEFAULT_URL;
+        inUrl.setText(savedUrl);
+        inUrl.setSelectAllOnFocus(true);
+        inUrl.setTextSize(14f);
+        box.addView(inUrl);
+
+        TextView l2 = new TextView(this);
+        l2.setText("访问令牌（可留空；也可直接在上面的地址里带 ?token=）");
+        l2.setTextSize(12f);
+        l2.setTextColor(Color.parseColor("#7b8494"));
+        l2.setPadding(0, dp(12), 0, dp(4));
+        box.addView(l2);
+
+        EditText inToken = new EditText(this);
+        inToken.setInputType(InputType.TYPE_CLASS_TEXT);
+        inToken.setText(prefs.getString(KEY_TOKEN, ""));
+        inToken.setHint("例如 u6G2nrxIU0ECbag2");
+        inToken.setSelectAllOnFocus(true);
+        inToken.setTextSize(14f);
+        box.addView(inToken);
 
         AlertDialog.Builder b = new AlertDialog.Builder(this)
-                .setTitle(firstRun ? "首次配置" : "修改服务地址")
+                .setTitle(firstRun ? "首次配置" : "修改配置")
                 .setView(box)
                 .setCancelable(!firstRun)
                 .setPositiveButton("保存", null);
@@ -248,14 +294,23 @@ public class MainActivity extends Activity {
 
         AlertDialog dlg = b.create();
         dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            String v2 = input.getText().toString().trim();
-            if (v2.isEmpty()) {
-                Toast.makeText(this, "地址不能为空", Toast.LENGTH_SHORT).show();
+            String u = inUrl.getText().toString().trim();
+            String t = inToken.getText().toString().trim();
+            if (u.isEmpty()) {
+                Toast.makeText(this, "服务地址不能为空", Toast.LENGTH_SHORT).show();
                 return;
             }
-            prefs.edit().putString(KEY_URL, v2).apply();
+            if (t.isEmpty()) {
+                // 允许 URL 自带 token
+                int i = u.indexOf("token=");
+                if (i < 0) {
+                    Toast.makeText(this, "请填写访问令牌（或在地址里带上 ?token=）", Toast.LENGTH_LONG).show();
+                    return;
+                }
+            }
+            prefs.edit().putString(KEY_URL, u).putString(KEY_TOKEN, t).apply();
             dlg.dismiss();
-            loadUrl(v2);
+            loadUrl(buildUrl());
         }));
         dlg.show();
 
@@ -266,26 +321,54 @@ public class MainActivity extends Activity {
 
     /* ------------------------------------------------------------ 生命周期 */
 
+    /**
+     * 返回键三段式处理：短按 = 后退/退出，长按 = 打开配置。
+     * 注意：onKeyLongPress 只有在 onKeyDown 里调用了 event.startTracking() 后才会触发，
+     * 所以这里 onKeyDown 一律先 startTracking 并消费，真正的动作交给 onKeyUp / onKeyLongPress。
+     */
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (errorView.getVisibility() == View.VISIBLE) {
-                return super.onKeyDown(keyCode, event);
-            }
-            if (webView.canGoBack()) {
-                webView.goBack();
-                return true;
-            }
+            event.startTracking();
+            return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    /** 长按返回键 = 打开配置（配置错了也能自救，不必清应用数据） */
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            showSettingsDialog(false);
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.isTracking() && !event.isCanceled()) {
+                // 短按
+                if (errorView.getVisibility() == View.VISIBLE) {
+                    return super.onKeyUp(keyCode, event);
+                }
+                if (webView.canGoBack()) {
+                    webView.goBack();
+                    return true;
+                }
+                return super.onKeyUp(keyCode, event); // 无历史可退：交还系统（退出应用）
+            }
+            return true; // 已被长按消费
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // 回到前台时若当前是错误页，自动重试一次（服务可能刚启动）
-        if (errorView.getVisibility() == View.VISIBLE && currentUrl != null) {
-            loadUrl(currentUrl);
+        if (errorView.getVisibility() == View.VISIBLE) {
+            loadUrl(buildUrl());
         }
     }
 
