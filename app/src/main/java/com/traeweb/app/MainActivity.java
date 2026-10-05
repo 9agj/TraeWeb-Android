@@ -280,7 +280,7 @@ public class MainActivity extends Activity {
         EditText inToken = new EditText(this);
         inToken.setInputType(InputType.TYPE_CLASS_TEXT);
         inToken.setText(prefs.getString(KEY_TOKEN, ""));
-        inToken.setHint("例如 u6G2nrxIU0ECbag2");
+        inToken.setHint("粘贴你的访问令牌（bash /root/traeweb/info.sh 可查看）");
         inToken.setSelectAllOnFocus(true);
         inToken.setTextSize(14f);
         box.addView(inToken);
