@@ -344,7 +344,115 @@
     return { ok: true, total: list.length, okCount: okCount };
   }
 
+  
   /**
+   * 内置 WebView 登录（首选方式）。
+   *
+   * 为什么这条路能拿到可用凭证：
+   *   X-Cloudide-Session 只有落在**本 App 的 WebView** 里才能读到明文。
+   *   系统浏览器的 cookie 库用 v10 AES-GCM 加密、密钥在 TEE，root 也解不开；
+   *   而授权回调只给 userJwt / refreshToken（source=refresh_token 的受限凭证），
+   *   打业务接口一律 401。
+   *
+   * 所以登录必须在 App 内完成。
+   */
+  async function addAccountByWebLogin(onTick) {
+    const WL = window.NativeBridge && window.NativeBridge.WebLogin;
+    if (!WL || !WL.available) {
+      return { ok: false, error: '内置登录仅支持在 APK 内使用' };
+    }
+
+    diag('login', '=== 打开内置登录页 ===');
+    WL.clear();
+    if (!WL.open()) {
+      return { ok: false, error: '无法打开登录页' };
+    }
+
+    diag('login', '等待用户在 WebView 内完成登录…');
+    const r = await WL.wait(300000, onTick);
+    if (!r) {
+      return { ok: false, error: '等待超时（5 分钟）。请在登录页内完成手机号登录后点「我已登录完成」。' };
+    }
+
+    const session = r.session || '';
+    let token = r.token || '';
+    diag('login', '登录页返回: session=' + (session ? session.length + '字符' : '空')
+      + ' token=' + (token ? token.length + '字符' : '空'));
+
+    if (!session) {
+      return { ok: false, error: '未拿到 X-Cloudide-Session' };
+    }
+
+    // 拿 session 换一个新鲜的 JWT（比 localStorage 里的更可靠）
+    const t = await T.getToken(session);
+    if (t.ok) {
+      token = t.token;
+      diag('login', '用 session 换到新 JWT（' + token.length + '字符）');
+    } else {
+      diag('login', 'session 换 JWT 失败：' + t.error + '（回退用 localStorage 的 token）');
+    }
+
+    if (!token) {
+      return { ok: false, error: '既没有换到 JWT，也没有可用的本地 token' };
+    }
+
+    const uid = T.parseAccountUid(token) || null;
+    const exp = T.parseJwtExp(token);
+    const dev = T.randomDeviceId();
+
+    // 判重：同 uid 视为同一账号，刷新凭证即可
+    const dup = findDuplicateByUid(uid);
+    if (dup) {
+      updateAccount(dup.id, {
+        session: session,
+        token: token,
+        tokenUpdatedAt: new Date().toISOString(),
+        tokenAlive: true,
+        accountUid: uid || dup.accountUid,
+        lastError: null,
+        loginMethod: 'webview',
+      });
+      diag('login', '已有账号，凭证已刷新: ' + dup.id);
+      const rf = await refreshProfile(dup.id);
+      await pushToRelay(dup.id, { silent: false });
+      return { ok: true, account: findAccount(dup.id), refreshed: true, profileSynced: rf.ok };
+    }
+
+    const acc = {
+      id: uuid(),
+      name: null,
+      session: session,
+      refreshToken: null,
+      token: token,
+      tokenUpdatedAt: new Date().toISOString(),
+      deviceId: dev,
+      accountUid: uid,
+      screenName: null,
+      mobileMasked: null,
+      avatarUrl: null,
+      isStudent: false,
+      isMember: false,
+      remainingCredits: -1,
+      lastCheckinDate: null,
+      lastCheckinAt: null,
+      enabled: true,
+      tokenAlive: true,
+      createdAt: new Date().toISOString(),
+      lastError: null,
+      loginMethod: 'webview',
+    };
+    addAccount(acc);
+    diag('login', '账号已写入: ' + acc.id + ' uid=' + (uid || '?'));
+
+    const rf = await refreshProfile(acc.id);
+    diag('login', 'refreshProfile -> ok=' + rf.ok + ' err=' + (rf.error || '-'));
+
+    await pushToRelay(acc.id, { silent: false });
+
+    return { ok: true, account: findAccount(acc.id), profileSynced: rf.ok };
+  }
+
+/**
    * 浏览器登录：跳系统浏览器 → 手机号登录 → 回调自动完成。
    *
    * 拿到的可能是 userJwt（Cloud-IDE-JWT）或 refreshToken：
@@ -766,6 +874,7 @@
     streak: streak,
     addAccountBySession: addAccountBySession,
     addAccountBySms: addAccountBySms,
+    addAccountByWebLogin: addAccountByWebLogin,
     addAccountByBrowserLogin: addAccountByBrowserLogin,
     refreshProfile: refreshProfile,
     ensureToken: ensureToken,

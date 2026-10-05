@@ -677,6 +677,56 @@ public class NativeApi {
         } catch (Throwable ignored) { }
     }
 
+    /* ------------------------------------------------------ 内置登录页 */
+
+    /**
+     * 打开内置登录 WebView。
+     *
+     * 关键区别：登录发生在本 App 的 WebView 里，所以 X-Cloudide-Session
+     * 会落进本 App 的 cookie jar —— CookieManager.getCookie() 能直接读到明文。
+     * 系统浏览器的 cookie 库是 v10 AES-GCM 加密、密钥在 TEE，root 也解不开。
+     *
+     * 这是获取可用凭证的唯一可靠路径。
+     */
+    @JavascriptInterface
+    public void openLoginWebView() {
+        try {
+            android.content.Intent i = new android.content.Intent(ctx, LoginWebViewActivity.class);
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Throwable t) {
+            Log.w(TAG, "打开登录页失败: " + safe(t.getMessage()));
+            toast("无法打开登录页：" + safe(t.getMessage()));
+        }
+    }
+
+    /**
+     * 读取内置登录页拿到的凭证。
+     *
+     * 登录页会把结果写进 SharedPreferences（跨 Activity 传值受 launchMode 影响，
+     * 落盘更稳），这里读出来交给前端。
+     *
+     * @return JSON：{ok, session, token, cookies} 或 {ok:false}
+     */
+    @JavascriptInterface
+    public String getWebLoginResult() {
+        try {
+            String v = store.getString("web_login_result", "");
+            if (v == null || v.isEmpty()) return "{\"ok\":false}";
+            return v;
+        } catch (Throwable t) {
+            return errorJson("读取登录结果失败：" + safe(t.getMessage()));
+        }
+    }
+
+    /** 清掉内置登录结果（前端消费后调用） */
+    @JavascriptInterface
+    public void clearWebLoginResult() {
+        try {
+            store.edit().remove("web_login_result").apply();
+        } catch (Throwable ignored) { }
+    }
+
     /**
      * 用系统浏览器打开链接。file:// 页面里 window.open 常被拦，
      * 且我们要的是「跳到浏览器」，所以必须走原生 Intent。

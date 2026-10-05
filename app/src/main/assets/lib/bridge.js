@@ -145,4 +145,55 @@
   };
 
   window.NativeBridge.BrowserLogin = BrowserLogin;
+  /**
+   * 内置登录页（推荐路径）。
+   *
+   * 登录在本 App 的 WebView 里完成，所以 X-Cloudide-Session 落进本 App 的
+   * cookie jar，getCookie() 直接读到明文。系统浏览器那条路拿不到 ——
+   * 它的 cookie 库是 v10 AES-GCM 加密，密钥在 TEE，root 也解不开。
+   */
+  const WebLogin = {
+    available: !!(isNative && Native.openLoginWebView),
+
+    /** 打开登录页 */
+    open() {
+      if (!this.available) return false;
+      try { Native.openLoginWebView(); return true; }
+      catch (e) { return false; }
+    },
+
+    /** 读一次结果；未完成返回 null */
+    poll() {
+      if (!this.available) return null;
+      try {
+        const raw = Native.getWebLoginResult();
+        if (!raw) return null;
+        const o = JSON.parse(raw);
+        return o && o.ok ? o : null;
+      } catch (e) {
+        return null;
+      }
+    },
+
+    clear() {
+      if (isNative && Native.clearWebLoginResult) {
+        try { Native.clearWebLoginResult(); } catch (e) { /* 忽略 */ }
+      }
+    },
+
+    /** 等待用户在登录页完成（轮询到超时） */
+    async wait(timeoutMs, onTick) {
+      const limit = timeoutMs || 300000;
+      const step = 1500;
+      for (let waited = 0; waited < limit; waited += step) {
+        const r = this.poll();
+        if (r) { this.clear(); return r; }
+        if (onTick) { try { onTick(waited); } catch (e) { /* 忽略 */ } }
+        await new Promise((res) => setTimeout(res, step));
+      }
+      return null;
+    },
+  };
+
+  window.NativeBridge.WebLogin = WebLogin;
 })();

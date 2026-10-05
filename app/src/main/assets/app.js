@@ -622,7 +622,7 @@ function setupDialogs() {
     dlgSms.close();
   });
 
-  // 浏览器登录：跳浏览器 → 用户手机号登录 → 回调自动完成
+  // 内置登录页：在 App 自己的 WebView 里完成登录，cookie 明文可读
   $('#btnSmsSubmit').addEventListener('click', async () => {
     const btn = $('#btnSmsSubmit');
     const err = $('#smsError');
@@ -631,23 +631,22 @@ function setupDialogs() {
     st.hidden = true;
 
     btn.disabled = true;
-    btn.textContent = '等待浏览器登录…';
-    st.textContent = '已打开浏览器，请在其中完成登录。完成后本页会自动继续。';
+    btn.textContent = '等待登录完成…';
+    st.textContent = '已打开登录页，请在其中完成手机号登录，然后点「我已登录完成」。';
     st.hidden = false;
 
-    const t0 = Date.now();
-    const r = await E.addAccountByBrowserLogin((waited) => {
-      const left = Math.max(0, 180 - Math.floor(waited / 1000));
-      st.textContent = '等待浏览器完成登录… 剩余 ' + left + ' 秒';
+    const r = await E.addAccountByWebLogin((waited) => {
+      const left = Math.max(0, 300 - Math.floor(waited / 1000));
+      st.textContent = '等待登录完成… 剩余 ' + left + ' 秒';
     });
 
     btn.disabled = false;
-    btn.textContent = '打开浏览器登录';
+    btn.textContent = '打开登录页';
 
     if (r.ok) {
       dlgSms.close();
       toast(r.refreshed ? '凭证已更新' : '登录成功', 'ok');
-      logLine('浏览器登录成功：'
+      logLine('登录成功：'
         + ((r.account && (r.account.screenName || r.account.name || r.account.accountUid)) || '账号')
         + (r.refreshed ? '（已有账号，凭证已刷新）' : ''), 'ok');
       loadState();
@@ -655,10 +654,6 @@ function setupDialogs() {
       err.textContent = r.error || '登录失败';
       err.hidden = false;
       st.hidden = true;
-      // 浏览器没打开时把链接给出来，允许手动打开
-      if (r.url) {
-        logLine('可手动打开此链接完成登录：' + r.url, 'warn');
-      }
     }
   });
 

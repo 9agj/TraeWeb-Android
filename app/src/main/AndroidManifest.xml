@@ -36,5 +36,17 @@
             android:label="接入地址控制台"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
             android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            内置登录页：在 App 自己的 WebView 里完成 Trae 登录。
+            这样 X-Cloudide-Session 落在本 App 的 cookie jar 里，可直接读取明文；
+            系统浏览器的 cookie 库是 v10 加密（密钥在 TEE），root 也解不开。
+        -->
+        <activity
+            android:name=".LoginWebViewActivity"
+            android:exported="false"
+            android:label="登录 Trae"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>
