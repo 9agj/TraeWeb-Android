@@ -1,0 +1,54 @@
+// Gradle init script: make the Android build work on an arm64 host.
+//
+// The Android SDK and AGP both ship x86-64 aapt2/aapt/zipalign binaries.
+// This container is arm64 and binfmt_misc cannot be mounted, so we wrap every
+// x86-64 ELF tool we find under $ANDROID_HOME and the Gradle transform cache
+// with a shim that dispatches through qemu-user with an x86-64 sysroot.
+//
+// Runs as soon as the build starts, before any task executes.
+
+def x86root = System.getenv('QEMU86_ROOT') ?: '/opt/x86root'
+def qemu = '/usr/bin/qemu-x86_64-static'
+
+def wrapBinary = { File bin ->
+    if (!bin.exists() || !bin.isFile()) return
+    // already a shell script? leave it
+    try {
+        def head = new byte[2]
+        bin.withInputStream { it.read(head) }
+        if (head[0] == (byte) 0x23 && head[1] == (byte) 0x21) return // '#!'
+    } catch (Exception ignored) { return }
+
+    def real = new File(bin.path + '.real')
+    if (!real.exists()) {
+        bin.renameTo(real)
+    }
+    bin.text = """#!/bin/bash
+export QEMU_LD_PREFIX=${x86root}
+exec ${qemu} "${real.path}" "\$@"
+"""
+    bin.setExecutable(true, false)
+}
+
+def wrapTree = { File root ->
+    if (root == null || !root.isDirectory()) return
+    def names = ['aapt2', 'aapt', 'zipalign', 'aidl', 'split-select'] as Set
+    root.eachFileRecurse { f ->
+        if (!f.isFile()) return
+        if (!names.contains(f.name)) return
+        if (f.path.endsWith('.real')) return
+        wrapBinary(f)
+    }
+}
+
+gradle.projectsLoaded { g ->
+    // 1) Android SDK build-tools
+    def sdk = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+    if (sdk) {
+        wrapTree(new File(sdk, 'build-tools'))
+    }
+    // 2) AGP's own aapt2, unpacked into the Gradle transform cache
+    def gradleHome = g.gradle.gradleUserHomeDir
+    wrapTree(new File(gradleHome, 'caches/transforms-4'))
+    wrapTree(new File(gradleHome, 'caches/transforms-3'))
+}

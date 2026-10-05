@@ -321,6 +321,50 @@ public class NativeApi {
         }
     }
 
+    /**
+     * 随机重置接入服务 Key。
+     * 返回 JSON：{ok, apiKey} 或 {ok:false, error}
+     */
+    @JavascriptInterface
+    public String relayGenerateKey() {
+        try {
+            RelayService r = RelayService.get(ctx);
+            String k = r.regenerateApiKey();
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("apiKey", k);
+            // Key 是经环境变量传给 Go 进程的，不重启读不到新值
+            o.put("needsRestart", true);
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("生成失败：" + safe(t.getMessage()));
+        }
+    }
+
+    /**
+     * 设置自定义 Key。
+     * @return JSON：{ok, apiKey} 或 {ok:false, error}
+     */
+    @JavascriptInterface
+    public String relaySetKey(String raw) {
+        try {
+            RelayService r = RelayService.get(ctx);
+            String k = r.setApiKey(raw);
+            JSONObject o = new JSONObject();
+            if (k == null) {
+                o.put("ok", false);
+                o.put("error", "格式不合法：需 8–128 位，仅限字母、数字与 _ - . 三种符号");
+            } else {
+                o.put("ok", true);
+                o.put("apiKey", k);
+                o.put("needsRestart", true);
+            }
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("设置失败：" + safe(t.getMessage()));
+        }
+    }
+
     /** 把文本放进系统剪贴板 */
     @JavascriptInterface
     public void copyToClipboard(String text) {

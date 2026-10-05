@@ -175,6 +175,21 @@
     try { return JSON.parse(r.body); } catch (e) { return { ok: true }; }
   }
 
+
+  /** 随机生成新 Key（返回 {ok, apiKey}） */
+  function generateKey() {
+    if (!isNative || !Native.relayGenerateKey) return { ok: false, error: '原生桥不可用' };
+    try { return JSON.parse(Native.relayGenerateKey()); }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+
+  /** 设置自定义 Key（返回 {ok, apiKey} 或 {ok:false, error}） */
+  function setKey(raw) {
+    if (!isNative || !Native.relaySetKey) return { ok: false, error: '原生桥不可用' };
+    try { return JSON.parse(Native.relaySetKey(String(raw || ''))); }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+
   window.Relay = {
     isNative: isNative,
     status: status,
@@ -189,5 +204,7 @@
     accounts: accounts,
     importAccount: importAccount,
     importCallback: importCallback,
+    generateKey: generateKey,
+    setKey: setKey,
   };
 })();

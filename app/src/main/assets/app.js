@@ -418,7 +418,9 @@ async function renderRelay(opts) {
   }
   rows.push(row('接入地址', '<code>' + esc(s.baseUrlV1 || '') + '</code>'));
   rows.push(row('API Key', '<code class="relay-key">' + esc(s.apiKey || '') + '</code>'
-    + ' <button class="btn tiny ghost" id="btnRelayCopy">复制</button>'));
+    + ' <button class="btn tiny ghost" id="btnRelayCopy">复制</button>'
+    + ' <button class="btn tiny ghost" id="btnRelayGenKey">随机生成</button>'
+    + ' <button class="btn tiny ghost" id="btnRelaySetKey">自定义</button>'));
   if (running && RELAY_MODELS) {
     rows.push(row('可用模型', '<span class="ok">' + RELAY_MODELS.length + ' 个</span>'
       + ' <button class="btn tiny ghost" id="btnRelayModels">展开</button>'
@@ -476,6 +478,31 @@ async function renderRelay(opts) {
     if (r.ok) toast('已同步 ' + r.okCount + ' / ' + r.total + ' 个账号', r.okCount === r.total ? 'ok' : 'err');
     else toast(r.error || '同步失败', 'err');
     renderRelay();
+  });
+
+  const btnGenKey = $('#btnRelayGenKey');
+  if (btnGenKey) btnGenKey.addEventListener('click', () => {
+    if (!confirm('随机生成新的 API Key？\n\n生成后需要重启接入服务才生效，'
+        + '已经连上的客户端要改用新 Key。')) return;
+    const r = R.generateKey();
+    if (r.ok) {
+      toast('已生成新 Key · 需重启服务生效', 'warn');
+      logLine('接入服务 Key 已随机重置（重启后生效）', 'warn');
+      renderRelay();
+    } else toast(r.error || '生成失败', 'err');
+  });
+
+  const btnSetKey = $('#btnRelaySetKey');
+  if (btnSetKey) btnSetKey.addEventListener('click', () => {
+    const cur = (R.status().apiKey) || '';
+    const v = prompt('输入自定义 API Key\n（8–128 位，字母数字与 _ - . 三种符号）', cur);
+    if (v === null) return;
+    const r = R.setKey(v);
+    if (r.ok) {
+      toast('Key 已更新 · 需重启服务生效', 'warn');
+      logLine('接入服务 Key 已改为自定义值（重启后生效）', 'warn');
+      renderRelay();
+    } else toast(r.error || '格式不合法', 'err');
   });
 
   const btnRestartInline = $('#btnRelayRestartInline');

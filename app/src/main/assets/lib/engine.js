@@ -397,10 +397,8 @@
     // 优先交给接入服务做（它内部走 ExchangeToken 并轮换 refreshToken）；
     // 失败时退回已拿到的 Token 直接用。
     if (finalRefresh) {
-      const ex = await exchangeRefreshToken(refreshToken, {
+      const ex = await exchangeRefreshToken(finalRefresh, {
         uid: uid,
-        userInfo: p.userInfo || '',
-        loginTraceID: p.loginTraceID || '',
       });
       if (ex.ok) {
         log('refreshToken 已交给接入服务换取（会同时完成账号导入）', 'login');

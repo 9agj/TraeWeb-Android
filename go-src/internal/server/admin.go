@@ -1,9 +1,12 @@
-﻿// 管理面板（/admin）：只读查询，无鉴权（本地面板）；CLI 操作留待开发。
+// 管理面板（/admin）：只读查询，无鉴权（本地面板）；CLI 操作留待开发。
 package server
 
 import (
+	"bytes"
 	_ "embed"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,10 +17,29 @@ import (
 var adminPageHTML []byte
 
 // adminPage 返回内嵌 HTML 面板（深色简洁风，无外部依赖）。
+//
+// 把 APIKey 注入页面：控制台要展示当前密钥并支持改钥，页内拿不到环境变量，
+// 所以在这里塞一个全局常量。Key 本来就是本机回环面板自己的凭据，不构成额外暴露。
 func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(adminPageHTML)
+	body := adminPageHTML
+	if len(body) > 0 && h.cfg.APIKey != "" {
+		inject := []byte("<script>window.__TW2A_KEY__=" + jsonString(h.cfg.APIKey) + ";</script>\n</head>")
+		body = bytes.Replace(body, []byte("</head>"), inject, 1)
+	}
+	_, _ = w.Write(body)
+}
+
+// jsonString 把一个字符串编码成 JSON 字面量（含引号），用于安全注入 <script>。
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	// 防止 </script> 提前闭合
+	out := strings.ReplaceAll(string(b), "</", "<\\/")
+	return out
 }
 
 // adminCredits 查询全部账号的实时额度 + 签到状态（并发拉取上游）。

@@ -62,9 +62,49 @@ public class RelayService {
     public String apiKey() {
         String k = prefs.getString("relay_api_key", null);
         if (k == null || k.isEmpty()) {
-            k = "sk-trae-" + UUID.randomUUID().toString().replace("-", "");
+            k = generateKey();
             prefs.edit().putString("relay_api_key", k).apply();
         }
+        return k;
+    }
+
+    /**
+     * 生成一个新的接入服务 Key。
+     *
+     * 用 SecureRandom 取 24 字节再 base64url —— 192 位熵，
+     * 与 UUID.randomUUID()（122 位）相比更宽裕，且去掉了连字符更好复制。
+     */
+    public static String generateKey() {
+        java.security.SecureRandom r = new java.security.SecureRandom();
+        byte[] b = new byte[24];
+        r.nextBytes(b);
+        String s = android.util.Base64.encodeToString(b,
+                android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+        return "sk-trae-" + s;
+    }
+
+    /**
+     * 设置自定义 Key。改完必须重启服务才生效 ——
+     * Key 是通过 TW2A_API_KEY 环境变量传给 Go 进程的，进程不重启读不到新值。
+     *
+     * @return 规范化后的 Key；非法输入返回 null
+     */
+    public String setApiKey(String raw) {
+        if (raw == null) return null;
+        String k = raw.trim();
+        if (k.isEmpty()) return null;
+        // 只允许安全字符，避免环境变量携带怪字符导致服务异常
+        if (!k.matches("^[A-Za-z0-9_\\-.]{8,128}$")) return null;
+        prefs.edit().putString("relay_api_key", k).apply();
+        Log.i(TAG, "接入服务 Key 已更新（需重启生效）");
+        return k;
+    }
+
+    /** 随机生成并保存一个新 Key（不自动重启，由调用方决定） */
+    public String regenerateApiKey() {
+        String k = generateKey();
+        prefs.edit().putString("relay_api_key", k).apply();
+        Log.i(TAG, "接入服务 Key 已随机重置（需重启生效）");
         return k;
     }
 
