@@ -1,0 +1,13 @@
+services:
+  tw2api:
+    build: .
+    container_name: trae2api-web
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - TW2A_API_KEY=${TW2A_API_KEY:?set TW2A_API_KEY in .env or shell}   # key 走 env，不落盘 git
+    ports:
+      - "7864:7864"
+    volumes:
+      - ./auths:/app/auths
+      - ./data:/app/data

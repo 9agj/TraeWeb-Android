@@ -450,6 +450,101 @@ function renderRef() {
   $('#btnClearKeys').addEventListener('click', () => { KEY_LIST = []; renderRef(); });
 }
 
+/* ───────────────────────── 中转站 ───────────────────────── */
+
+let RELAY_POLL = null;
+let RELAY_LAST_RUNNING = null;
+
+function renderRelay() {
+  const box = $('#relayBody');
+  const R = window.Relay;
+  if (!R) { box.innerHTML = '<div class="ref-empty">模块未加载</div>'; return; }
+
+  const s = R.status();
+  const tag = $('#relayTag');
+
+  if (!s.available) {
+    tag.textContent = '不可用';
+    tag.className = 'tag warn';
+    box.innerHTML = '<div class="ref-empty">' + esc(s.reason || '当前环境不支持') + '</div>';
+    stopRelayPoll();
+    return;
+  }
+
+  const running = !!s.running;
+  RELAY_LAST_RUNNING = running;
+  tag.textContent = running ? '运行中' : '未运行';
+  tag.className = 'tag ' + (running ? 'ok' : 'warn');
+
+  const rows = [];
+  rows.push(row('运行状态', running
+    ? '<span class="ok">监听 127.0.0.1:' + s.port + '</span>'
+    : '<span class="warn">' + esc(s.reason || '未启动') + '</span>'));
+  rows.push(row('API 地址', '<code>' + esc(s.baseUrlV1 || '') + '</code>'));
+  rows.push(row('API Key', '<code class="relay-key">' + esc(s.apiKey || '') + '</code>'
+    + ' <button class="btn tiny ghost" id="btnRelayCopy">复制</button>'));
+  rows.push(row('登录回调', '<code>127.0.0.1:' + s.callbackPort + '</code>'));
+  rows.push(row('二进制', s.binaryPresent
+    ? '<span class="ok">已内嵌</span>'
+    : '<span class="err">缺失（构建异常）</span>'));
+
+  box.innerHTML =
+    '<div class="note-line">把 Trae 的模型通道反代为 <b>OpenAI 兼容 API</b>，'
+    + '服务就跑在这台手机上，不经过任何外部服务器。'
+    + '账号登录、模型列表、额度与消费记录都在<b>控制台</b>里。</div>'
+    + '<div class="relay-rows">' + rows.join('') + '</div>'
+    + (running
+      ? '<div class="ref-empty" style="margin-top:10px">客户端配置：地址填上面的 API 地址，Key 填上面那串。</div>'
+      : '<div class="relay-actions"><button class="btn small primary" id="btnRelayStart">启动中转站</button></div>');
+
+  const btnCopy = $('#btnRelayCopy');
+  if (btnCopy) btnCopy.addEventListener('click', () => {
+    if (R.copy(s.apiKey || '')) toast('API Key 已复制', 'ok');
+    else toast('复制失败', 'err');
+  });
+  const btnStart = $('#btnRelayStart');
+  if (btnStart) btnStart.addEventListener('click', async () => {
+    btnStart.disabled = true;
+    btnStart.textContent = '启动中…';
+    R.start();
+    const r = await R.waitReady(40000);
+    if (r.running) toast('中转站已启动', 'ok');
+    else toast(r.reason || '启动失败', 'err');
+    renderRelay();
+  });
+
+  // 未运行时停止轮询，省电
+  if (!running) stopRelayPoll();
+  else startRelayPoll();
+}
+
+function row(k, v) {
+  return '<div class="relay-row"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
+}
+
+function startRelayPoll() {
+  if (RELAY_POLL) return;
+  RELAY_POLL = setInterval(() => {
+    const R = window.Relay;
+    if (!R) return;
+    const s = R.status();
+    const tag = $('#relayTag');
+    if (tag) {
+      tag.textContent = s.running ? '运行中' : '未运行';
+      tag.className = 'tag ' + (s.running ? 'ok' : 'warn');
+    }
+    // 状态发生翻转时重绘
+    if (RELAY_LAST_RUNNING !== s.running) {
+      RELAY_LAST_RUNNING = s.running;
+      renderRelay();
+    }
+  }, 5000);
+}
+
+function stopRelayPoll() {
+  if (RELAY_POLL) { clearInterval(RELAY_POLL); RELAY_POLL = null; }
+}
+
 /* ───────────────────────── 设置 ───────────────────────── */
 
 function renderSettings() {
@@ -582,6 +677,19 @@ function boot() {
   });
   document.querySelector('.reftab[data-tab="models"]').classList.add('primary');
   renderRef();
+
+  // 中转站面板
+  $('#btnRelayConsole').addEventListener('click', () => {
+    if (!window.Relay) return;
+    window.Relay.openConsole();
+  });
+  $('#btnRelayRestart').addEventListener('click', () => {
+    if (!window.Relay) return;
+    window.Relay.restart();
+    toast('正在重启中转站…', 'ok');
+    setTimeout(renderRelay, 4000);
+  });
+  renderRelay();
 
   tickClock();
   setInterval(tickClock, 1000);

@@ -107,6 +107,10 @@ public class MainActivity extends Activity {
         });
 
         webView.loadUrl("file:///android_asset/index.html");
+
+        // 内嵌中转站：后台拉起 Go 服务，不阻塞界面。
+        // 二进制缺失（构建异常）时静默失败，前端「中转站」面板会显示具体状态。
+        new Thread(() -> RelayService.get(this).start(), "relay-boot").start();
     }
 
     /* ------------------------------------------------------------ 生命周期 */
@@ -148,13 +152,19 @@ public class MainActivity extends Activity {
     private void showToolsMenu() {
         new AlertDialog.Builder(this)
                 .setTitle("TraeWeb 工具")
-                .setItems(new String[]{"刷新页面", "清空全部数据", "关于"}, (d, which) -> {
+                .setItems(new String[]{"中转站控制台", "重启中转站", "刷新页面", "清空全部数据", "关于"}, (d, which) -> {
                     if (which == 0) {
-                        webView.reload();
+                        startActivity(new Intent(this, RelayConsoleActivity.class));
                     } else if (which == 1) {
+                        RelayService.get(this).restart();
+                        android.widget.Toast.makeText(this, "正在重启中转站…", android.widget.Toast.LENGTH_SHORT).show();
+                    } else if (which == 2) {
+                        webView.reload();
+                    } else if (which == 3) {
                         new AlertDialog.Builder(this)
                                 .setTitle("确认清空？")
-                                .setMessage("将删除本机保存的所有账号凭证与签到记录，不可恢复。")
+                                .setMessage("将删除本机保存的所有账号凭证与签到记录，不可恢复。\n\n"
+                                        + "中转站里的账号凭证在另一个目录，不会被清掉 —— 需要的话进控制台单独删。")
                                 .setPositiveButton("清空", (d2, w2) -> {
                                     webView.evaluateJavascript(
                                             "try{localStorage.clear();}catch(e){};location.reload();", null);
@@ -165,8 +175,11 @@ public class MainActivity extends Activity {
                         new AlertDialog.Builder(this)
                                 .setTitle("TraeWeb")
                                 .setMessage("自包含版 · 无需服务器\n\n"
-                                        + "前端与业务逻辑随 APK 打包，网络请求经原生层发出。\n"
-                                        + "数据仅保存在本机。\n\n"
+                                        + "① 签到面板：管理 Trae 账号、每日签到、云端部署\n"
+                                        + "② 中转站：把 Trae 模型通道反代为 OpenAI 兼容 API\n"
+                                        + "    地址 http://" + RelayService.get(this).baseUrl().replace("http://", "")
+                                        + "  端口 " + RelayService.get(this).port() + "\n\n"
+                                        + "两部分数据各自独立存放，互不影响。\n"
                                         + "长按返回键可再次打开本菜单。")
                                 .setPositiveButton("知道了", null)
                                 .show();

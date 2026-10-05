@@ -254,6 +254,82 @@ public class NativeApi {
         } catch (Throwable ignored) { }
     }
 
+    /* ------------------------------------------------------------ 中转站 */
+
+    /** 中转站状态：前端据此渲染面板 */
+    @JavascriptInterface
+    public String relayStatus() {
+        try {
+            RelayService r = RelayService.get(ctx);
+            JSONObject o = new JSONObject();
+            o.put("running", r.isRunning() && r.probe());
+            o.put("port", r.port());
+            o.put("callbackPort", r.callbackPort());
+            o.put("baseUrl", r.baseUrl());
+            o.put("consoleUrl", r.consoleUrl());
+            o.put("apiKey", r.apiKey());
+            o.put("baseUrlV1", r.baseUrl() + "/v1");
+            o.put("binaryPresent", r.binaryPresent());
+            String err = r.lastError();
+            o.put("error", err == null ? "" : err);
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("relayStatus 失败：" + safe(t.getMessage()));
+        }
+    }
+
+    /** 启动中转站（异步，前端轮询 relayStatus 观察结果） */
+    @JavascriptInterface
+    public void relayStart() {
+        try {
+            final RelayService r = RelayService.get(ctx);
+            new Thread(() -> r.start(), "relay-start").start();
+        } catch (Throwable t) {
+            Log.w(TAG, "relayStart 失败: " + safe(t.getMessage()));
+        }
+    }
+
+    @JavascriptInterface
+    public void relayStop() {
+        try {
+            RelayService.get(ctx).stop();
+        } catch (Throwable ignored) { }
+    }
+
+    @JavascriptInterface
+    public void relayRestart() {
+        try {
+            final RelayService r = RelayService.get(ctx);
+            new Thread(() -> r.restart(), "relay-restart").start();
+        } catch (Throwable ignored) { }
+    }
+
+    /** 打开控制台 Activity（独立 WebView，避免 file:// 页面的同源限制） */
+    @JavascriptInterface
+    public void relayOpenConsole() {
+        try {
+            android.content.Intent i = new android.content.Intent(ctx, RelayConsoleActivity.class);
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Throwable t) {
+            Log.w(TAG, "打开控制台失败: " + safe(t.getMessage()));
+        }
+    }
+
+    /** 把文本放进系统剪贴板 */
+    @JavascriptInterface
+    public void copyToClipboard(String text) {
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) ctx.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("traeweb", text == null ? "" : text));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "复制失败: " + safe(t.getMessage()));
+        }
+    }
+
     /** 供 Java 侧读取（例如把服务地址注入页面） */
     public SharedPreferences prefs() {
         return store;

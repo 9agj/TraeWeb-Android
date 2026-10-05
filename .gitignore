@@ -21,3 +21,10 @@ out/
 *.keystore
 # 固定签名文件需随仓库提交（个人自用），故不忽略 *.p12
 !keystore/traeweb.p12
+
+# CI 交叉编译产出的中转站二进制（不入库，构建时生成）
+app/src/main/jniLibs/arm64-v8a/libtrae2api.so
+
+# Go 服务运行时数据
+go-src/auths/
+go-src/data/

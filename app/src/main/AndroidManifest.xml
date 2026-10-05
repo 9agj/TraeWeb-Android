@@ -12,7 +12,10 @@
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.TraeWeb">
+        android:theme="@style/Theme.TraeWeb"
+        android:extractNativeLibs="true">
+
+        <!-- 内地中转站二进制必须解压到磁盘才能 exec，见 build.gradle 的 useLegacyPackaging -->
 
         <activity
             android:name=".MainActivity"
@@ -25,5 +28,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 中转站控制台：独立 WebView，加载本机 127.0.0.1 上的 Go 服务面板 -->
+        <activity
+            android:name=".RelayConsoleActivity"
+            android:exported="false"
+            android:label="中转站控制台"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

@@ -11,8 +11,13 @@ android {
         // 用 adaptive icon（纯矢量，无 PNG 资源）故最低 API 26；本项目为个人自用，目标机为新版 Android
         minSdk 26
         targetSdk 34
-        versionCode 5
-        versionName "2.1.0"
+        versionCode 6
+        versionName "3.0.0"
+
+        // 内嵌的中转站二进制按 GOARCH=arm64 交叉编译，只出 arm64
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
     }
 
     // 固定签名：keystore/traeweb.p12 随仓库提交，保证每次构建签名一致，
@@ -36,6 +41,23 @@ android {
         debug {
             minifyEnabled false
             signingConfig signingConfigs.fixed
+        }
+    }
+
+    /*
+     * 内嵌中转站：Go 服务端以 libtrae2api.so 之名放进 jniLibs/arm64-v8a/。
+     *
+     * Android 10+ 对 app 私有目录实施 W^X，普通文件无法 exec；只有
+     * nativeLibraryDir（/data/app/<pkg>/lib/arm64/）允许执行。
+     *
+     * 而 Android 6+ 默认的 .so 打包方式是「压缩 + 页对齐、安装时 mmap」，
+     * 磁盘上不会产生独立文件，也就无法 exec。因此必须：
+     *   useLegacyPackaging = true  （打包时压缩，安装时解压）
+     *   extractNativeLibs="true"   （manifest 侧配合，见 AndroidManifest.xml）
+     */
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 

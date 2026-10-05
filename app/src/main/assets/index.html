@@ -93,6 +93,18 @@
     <div id="refBody" class="ref-body"></div>
   </section>
 
+  <!-- ── 中转站 ── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>中转站 <span class="tag" id="relayTag">OpenAI 兼容</span></h2>
+      <div class="panel-actions">
+        <button class="btn small ghost" id="btnRelayConsole">控制台</button>
+        <button class="btn small ghost" id="btnRelayRestart">重启</button>
+      </div>
+    </div>
+    <div id="relayBody" class="relay-body"></div>
+  </section>
+
   <!-- ── 设置 ── -->
   <section class="panel">
     <div class="panel-head"><h2>设置</h2></div>
@@ -256,6 +268,7 @@
 <script src="lib/engine.js"></script>
 <script src="lib/github.js"></script>
 <script src="lib/refdata.js"></script>
+<script src="lib/relay.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -453,6 +453,67 @@ main {
 .key-row code { flex: 1; min-width: 0; user-select: all; }
 .ref-empty { color: var(--muted); font-size: 12.5px; padding: 8px 0; }
 
+/* ───────────────────────── 中转站 ───────────────────────── */
+
+.relay-body { padding: 14px 18px; }
+.relay-rows { display: flex; flex-direction: column; }
+.relay-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12.5px;
+}
+.relay-row:last-child { border-bottom: none; }
+.relay-row .k {
+  color: var(--muted);
+  width: 74px;
+  flex: none;
+  font-size: 12px;
+}
+.relay-row .v {
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.relay-row .v code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 6px;
+  color: #c9d4e6;
+  word-break: break-all;
+}
+.relay-key { user-select: all; }
+.relay-actions { margin-top: 13px; }
+.relay-body .ok { color: var(--ok); }
+.relay-body .warn { color: var(--warn); }
+.relay-body .err { color: var(--err); }
+
+.btn.tiny {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+.tag.ok {
+  color: var(--ok);
+  background: rgba(52, 199, 123, .12);
+  border-color: rgba(52, 199, 123, .28);
+}
+.tag.warn {
+  color: var(--warn);
+  background: rgba(230, 162, 60, .12);
+  border-color: rgba(230, 162, 60, .28);
+}
+
 /* ───────────────────────── 对话框 ───────────────────────── */
 
 dialog {
