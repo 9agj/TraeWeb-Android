@@ -11,6 +11,7 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -251,6 +252,74 @@ public class NativeApi {
     public void log(String msg) {
         try {
             Log.i(TAG, msg);
+        } catch (Throwable ignored) { }
+    }
+
+    /* ------------------------------------------------------------ 诊断日志 */
+
+    /**
+     * 把一条诊断信息追加写入文件。
+     *
+     * 为什么需要：Android 的 logcat 环形缓冲很小，用户遇到问题再回来反馈时
+     * 早期日志往往已被冲掉；而我无法远程拿到设备日志。落盘后可以直接从
+     * app 私有目录取出来，用于精确定位「执行到哪一步失败」。
+     *
+     * 文件：filesDir/diag.log（追加，保留最近约 200 KB）
+     */
+    @JavascriptInterface
+    public void diag(String tag, String msg) {
+        try {
+            File f = new File(ctx.getFilesDir(), "diag.log");
+            // 简单轮转：超过 200 KB 就截掉前半
+            if (f.exists() && f.length() > 200 * 1024) {
+                byte[] all = readFileBytes(f);
+                int keep = all.length / 2;
+                try (java.io.FileOutputStream os = new java.io.FileOutputStream(f, false)) {
+                    os.write(all, all.length - keep, keep);
+                }
+            }
+            String line = new java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+                    .format(new java.util.Date())
+                    + " [" + (tag == null ? "-" : tag) + "] " + (msg == null ? "" : msg) + "\n";
+            try (java.io.FileOutputStream os = new java.io.FileOutputStream(f, true)) {
+                os.write(line.getBytes(StandardCharsets.UTF_8));
+            }
+            Log.i(TAG, "[diag] " + tag + ": " + msg);
+        } catch (Throwable t) {
+            Log.w(TAG, "diag 写入失败: " + safe(t.getMessage()));
+        }
+    }
+
+    private static byte[] readFileBytes(File f) {
+        try (java.io.FileInputStream is = new java.io.FileInputStream(f)) {
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } catch (Throwable t) {
+            return new byte[0];
+        }
+    }
+
+    /** 读取诊断日志尾部（前端「运行日志」可展示） */
+    @JavascriptInterface
+    public String diagRead() {
+        try {
+            File f = new File(ctx.getFilesDir(), "diag.log");
+            if (!f.exists()) return "";
+            byte[] all = readFileBytes(f);
+            int start = Math.max(0, all.length - 60000);
+            return new String(all, start, all.length - start, StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    @JavascriptInterface
+    public void diagClear() {
+        try {
+            new File(ctx.getFilesDir(), "diag.log").delete();
         } catch (Throwable ignored) { }
     }
 

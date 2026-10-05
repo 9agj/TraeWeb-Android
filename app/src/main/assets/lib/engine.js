@@ -118,6 +118,15 @@
 
   /* ------------------------------------------------------------ 工具 */
 
+  /** 诊断日志：同时写日志区与设备文件（logcat 缓冲太小，出问题就被冲掉） */
+  function diag(tag, msg) {
+    try {
+      log('[' + tag + '] ' + msg, tag);
+      const N = window.TraeNative;
+      if (N && N.diag) N.diag(tag, msg);
+    } catch (e) { /* 忽略 */ }
+  }
+
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const uuid = () =>
     (window.crypto && crypto.randomUUID)
@@ -347,12 +356,14 @@
    * @param {(ms:number)=>void} onTick 轮询回调，用于更新界面提示
    */
   async function addAccountByBrowserLogin(onTick) {
+    diag('login', '=== 开始浏览器登录 ===');
     const BL = window.NativeBridge && window.NativeBridge.BrowserLogin;
     if (!BL || !BL.available) {
       return { ok: false, error: '浏览器登录仅支持在 APK 内使用' };
     }
 
     const s = BL.start();
+    diag('login', 'startBrowserLogin -> ok=' + s.ok + ' callback=' + (s.callback || '') + ' err=' + (s.error || ''));
     if (!s.ok) return { ok: false, error: s.error };
 
     log('已生成授权链接，正在打开浏览器…', 'login');
@@ -365,6 +376,7 @@
 
     log('请在浏览器里用手机号登录 Trae（含滑块验证），完成后会自动回到 App', 'login');
     const r = await BL.wait(180000, onTick);
+    diag('login', 'wait 返回: ' + (r ? ('ok=' + r.ok + ' 参数=' + JSON.stringify(Object.keys(r.params || {}))) : 'null（超时）'));
 
     if (!r) {
       BL.stop();
@@ -376,6 +388,10 @@
     }
 
     const parsed = parseAuthCallback(r.params || {});
+    diag('login', '解析: token=' + (parsed.token ? parsed.token.length + '字符' : '空')
+      + ' session=' + (parsed.session ? '有(' + parsed.session.length + ')' : '空')
+      + ' refresh=' + (parsed.refreshToken ? '有' : '空')
+      + ' uid=' + (parsed.uid || '空') + ' note=' + (parsed.note || '-'));
     if (!parsed.token) {
       BL.stop();
       return { ok: false, error: '回调里没有可用的访问令牌' + (parsed.note ? '（' + parsed.note + '）' : '') };
@@ -396,6 +412,7 @@
     // refreshToken → 换新 token。
     // 优先交给接入服务做（它内部走 ExchangeToken 并轮换 refreshToken）；
     // 失败时退回已拿到的 Token 直接用。
+    diag('login', '准备交换 refreshToken: ' + (finalRefresh ? '有' : '无'));
     if (finalRefresh) {
       const ex = await exchangeRefreshToken(finalRefresh, {
         uid: uid,
@@ -417,7 +434,9 @@
 
     // 判重：先用 uid 对一下已有账号
     const accountUid = uid || T.parseAccountUid(token) || null;
+    diag('login', '判重: accountUid=' + (accountUid || '空'));
     const dup = findDuplicateByUid(accountUid);
+    diag('login', '判重结果: ' + (dup ? ('命中 ' + dup.id) : '无重复，将新建'));
     if (dup) {
       const patchDup = {
         token: token,
@@ -462,8 +481,10 @@
       loginMethod: 'browser',
     };
     addAccount(acc);
+    diag('login', '账号已写入: id=' + acc.id + ' session=' + (acc.session ? '有' : '空') + ' token长度=' + acc.token.length);
 
     const rf = await refreshProfile(acc.id);
+    diag('login', 'refreshProfile -> ok=' + rf.ok + ' err=' + (rf.error || '-'));
     log('已通过浏览器登录添加账号 ' + (nickname || accountUid || '')
       + (rf.ok ? '（资料已同步）' : '（资料同步失败：' + rf.error + '）'), 'login');
 

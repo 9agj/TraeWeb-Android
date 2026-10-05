@@ -11,8 +11,8 @@ android {
         // 用 adaptive icon（纯矢量，无 PNG 资源）故最低 API 26；本项目为个人自用，目标机为新版 Android
         minSdk 26
         targetSdk 34
-        versionCode 11
-        versionName "3.4.0"
+        versionCode 12
+        versionName "3.4.1"
 
         // 内嵌的中转站二进制按 GOARCH=arm64 交叉编译，只出 arm64
         ndk {

@@ -725,6 +725,20 @@ function boot() {
   tickClock();
   setInterval(tickClock, 1000);
 
+  // 回填设备上持久化的诊断日志 —— logcat 会被系统冲掉，落盘这份才是完整的
+  try {
+    const N = window.TraeNative;
+    if (N && N.diagRead) {
+      const past = N.diagRead();
+      if (past && past.trim()) {
+        const lines = past.trim().split('\n').slice(-60);
+        logLine('── 设备历史日志（最近 ' + lines.length + ' 条）──', 'info');
+        lines.forEach((l) => logLine(l, ''));
+      }
+    }
+    if (N && N.diag) N.diag('app', 'TraeWeb 启动 version=' + (window.__APP_VERSION__ || '?'));
+  } catch (e) { /* 忽略 */ }
+
   const native = window.NativeBridge && window.NativeBridge.isNative;
   logLine(native ? 'TraeWeb 已就绪（内置引擎）· 无需服务器' : 'TraeWeb 已就绪（浏览器模式：网络功能不可用）', 'info');
   loadState();
