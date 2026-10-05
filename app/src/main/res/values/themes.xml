@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TraeWeb" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">#0a0c10</item>
+        <item name="android:statusBarColor">#0a0c10</item>
+        <item name="android:navigationBarColor">#0a0c10</item>
+        <item name="android:colorBackground">#0a0c10</item>
+        <item name="colorPrimary">#5b8cff</item>
+        <item name="colorAccent">#5b8cff</item>
+    </style>
+</resources>
