@@ -146,7 +146,7 @@ public class NativeApi {
             }
             out.put("setCookie", cookies);
 
-            String loc = conn.getHeaderValue("Location");
+            String loc = conn.getHeaderField("Location");
             if (loc != null) out.put("location", loc);
 
             return out.toString();
