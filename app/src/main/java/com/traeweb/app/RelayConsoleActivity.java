@@ -17,7 +17,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 /**
- * 中转站控制台。
+ * 接入服务控制台。
  *
  * 独立 Activity 而非在主界面里嵌 iframe —— 主界面是 file:///android_asset/ 页面，
  * 同源策略下无法内嵌 http://127.0.0.1:7864 的内容；用独立 WebView 直接导航过去最干净。
@@ -87,8 +87,8 @@ public class RelayConsoleActivity extends Activity {
             @Override
             public void onReceivedError(WebView v, int code, String desc, String failingUrl) {
                 progressBar.setVisibility(View.GONE);
-                showError("无法连接中转站\n\n" + desc + "\n\n服务可能未启动 —— 回到主界面，"
-                        + "长按返回键 → 重启中转站。");
+                showError("无法连接接入服务\n\n" + desc + "\n\n服务可能未启动 —— 回到主界面，"
+                        + "长按返回键 → 重启接入服务。");
             }
         });
 
@@ -99,7 +99,7 @@ public class RelayConsoleActivity extends Activity {
                 boolean ok = relay.start();
                 runOnUiThread(() -> {
                     if (ok) loadConsole();
-                    else showError("中转站启动失败\n\n" + relay.lastError()
+                    else showError("接入服务启动失败\n\n" + relay.lastError()
                             + "\n\n二进制是否缺失：" + (relay.binaryPresent() ? "否" : "是"));
                 });
             }, "relay-console-boot").start();

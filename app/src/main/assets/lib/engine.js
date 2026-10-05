@@ -231,7 +231,75 @@
 
     const r = await refreshProfile(acc.id);
     log('已添加账号 ' + (acc.name || uid || '') + (r.ok ? '（资料已同步）' : '（资料同步失败：' + r.error + '）'), 'account');
+
+    // 顺带推送到内嵌中转站，省得两边各登一次。
+    // 失败不阻断登录 —— 中转站可能没启动，用户可在「接入地址」面板手动重推。
+    await pushToRelay(acc.id, { silent: false });
+
     return { ok: true, account: findAccount(acc.id), profileSynced: r.ok };
+  }
+
+  /**
+   * 把账号推送到内嵌中转站。
+   *
+   * 中转站只认 accessToken（Cloud-IDE-JWT），正好是 ensureToken 换出来的那个；
+   * 顺手把 deviceId 带过去，减少一端风控差异。
+   */
+  async function pushToRelay(accountId, opts) {
+    const silent = opts && opts.silent;
+    const R = window.Relay;
+    if (!R || !R.isNative) {
+      if (!silent) log('未在 APK 内运行，跳过中转站同步', 'relay');
+      return { ok: false, error: '环境不支持' };
+    }
+
+    const acc = findAccount(accountId);
+    if (!acc) return { ok: false, error: '账号不存在' };
+
+    // 确保有可用 JWT（过期会自动用 session 换新）
+    const t = await ensureToken(acc);
+    if (!t.ok) {
+      if (!silent) log('[中转站] 同步跳过：' + t.reason, 'relay');
+      return { ok: false, error: t.reason };
+    }
+
+    const cur = findAccount(accountId);
+    const exp = T.parseJwtExp(cur.token);
+
+    try {
+      const res = await R.importAccount({
+        token: cur.token,
+        deviceId: cur.deviceId || '',
+        machineId: cur.deviceId || '',
+        uid: cur.accountUid || '',
+        nickname: cur.name || cur.screenName || '',
+        enterpriseId: '',
+        expiresAt: exp || 0,
+      });
+      const action = (res && res.action) || 'ok';
+      if (!silent) log('[中转站] 同步成功（' + action + '）：'
+        + (cur.name || cur.screenName || cur.accountUid || ''), 'relay');
+      updateAccount(accountId, { relaySyncedAt: new Date().toISOString(), relayUid: (res && res.uid) || cur.accountUid });
+      return { ok: true, action: action, uid: (res && res.uid) || cur.accountUid };
+    } catch (e) {
+      if (!silent) log('[中转站] 同步失败：' + e.message, 'relay');
+      updateAccount(accountId, { relaySyncError: e.message });
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /** 批量推送所有账号到中转站 */
+  async function pushAllToRelay() {
+    const list = listAccounts();
+    if (list.length === 0) return { ok: false, error: '没有账号' };
+    let okCount = 0;
+    for (let i = 0; i < list.length; i++) {
+      const r = await pushToRelay(list[i].id, { silent: true });
+      if (r.ok) okCount++;
+      log('[' + (list[i].name || list[i].screenName || '账号') + '] 中转站同步'
+        + (r.ok ? '成功' : '失败：' + r.error), r.ok ? 'ok' : 'err');
+    }
+    return { ok: true, total: list.length, okCount: okCount };
   }
 
   /** 手机号 + 验证码登录并添加（绕开滑块：发码在浏览器做，登录接口不校验滑块） */
@@ -395,6 +463,8 @@
     checkinOne: checkinOne,
     checkinAll: checkinAll,
     getStatus: getStatus,
+    pushToRelay: pushToRelay,
+    pushAllToRelay: pushAllToRelay,
     getGithub: getGithub,
     setGithub: setGithub,
     getSettings: getSettings,

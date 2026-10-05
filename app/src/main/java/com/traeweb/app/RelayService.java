@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 内嵌中转站（Trae2API）进程管理。
+ * 内嵌接入服务（Trae2API）进程管理。
  *
  * 单例，供 MainActivity（启动）与 NativeApi（前端查询状态）共用。
  *
@@ -119,7 +119,7 @@ public class RelayService {
             env.put("HOME", base.getAbsolutePath());
             env.put("TMPDIR", ctx.getCacheDir().getAbsolutePath());
 
-            Log.i(TAG, "启动中转站: " + bin.getAbsolutePath());
+            Log.i(TAG, "启动接入服务: " + bin.getAbsolutePath());
             process = pb.start();
 
             // 必须持续消费 stdout，否则管道写满会阻塞服务端
@@ -135,7 +135,7 @@ public class RelayService {
                 try { Thread.sleep(500); } catch (InterruptedException e) { break; }
                 if (probe()) {
                     lastError = null;
-                    Log.i(TAG, "中转站就绪: " + baseUrl());
+                    Log.i(TAG, "接入服务就绪: " + baseUrl());
                     return true;
                 }
             }
@@ -173,7 +173,7 @@ public class RelayService {
                 Process.class.getMethod("destroyForcibly").invoke(process, noArgs);
             } catch (Throwable ignored) { }
             process = null;
-            Log.i(TAG, "中转站已停止");
+            Log.i(TAG, "接入服务已停止");
         }
     }
 

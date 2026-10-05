@@ -33,7 +33,7 @@
         <activity
             android:name=".RelayConsoleActivity"
             android:exported="false"
-            android:label="中转站控制台"
+            android:label="接入地址控制台"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode"
             android:windowSoftInputMode="adjustResize" />
     </application>

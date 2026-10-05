@@ -384,10 +384,8 @@ main {
 .logs .warn { color: var(--warn); }
 .logs .info { color: #7fa5ff; }
 
-/* ───────────────────────── 开发参考 ───────────────────────── */
-
-.ref-body { padding: 14px 18px; font-size: 13px; color: var(--text-dim); }
-.ref-body .note-line {
+/* 说明条（接入地址 / 控制台共用） */
+.note-line {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.65;
@@ -397,63 +395,16 @@ main {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
 }
-.ref-body .note-line b { color: var(--text); }
-.ref-group { margin-bottom: 16px; }
-.ref-group:last-child { margin-bottom: 0; }
-.ref-group h4 {
-  margin: 0 0 7px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: .2px;
-}
-.ref-body table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.ref-body th, .ref-body td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border-soft);
-  vertical-align: top;
-}
-.ref-body th { color: var(--muted); font-weight: 500; font-size: 11px; }
-.ref-body td.k { color: var(--text); white-space: nowrap; }
-.ref-body td.mid { color: var(--accent); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; white-space: nowrap; }
-.ref-body code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  background: var(--surface-3);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 1px 5px;
-  color: #c9d4e6;
-  word-break: break-all;
-}
-.ref-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-.ref-tools input[type="number"], .ref-tools select {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  padding: 5px 8px;
-  font-size: 12.5px;
-  font-family: inherit;
-  outline: none;
-  width: 78px;
-}
-.ref-tools label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
-.key-list { margin-top: 4px; }
-.key-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--border-soft);
-}
-.key-row:last-child { border-bottom: none; }
-.key-row .idx { color: var(--muted); font-size: 11px; width: 22px; flex: none; font-variant-numeric: tabular-nums; }
-.key-row code { flex: 1; min-width: 0; user-select: all; }
-.ref-empty { color: var(--muted); font-size: 12.5px; padding: 8px 0; }
+.note-line b { color: var(--text); }
 
-/* ───────────────────────── 中转站 ───────────────────────── */
+/* 空态 / 次要文本 */
+.ref-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 8px 0;
+}
+
+/* ───────────────────────── 接入地址 ───────────────────────── */
 
 .relay-body { padding: 14px 18px; }
 .relay-rows { display: flex; flex-direction: column; }
@@ -512,6 +463,31 @@ main {
   color: var(--warn);
   background: rgba(230, 162, 60, .12);
   border-color: rgba(230, 162, 60, .28);
+}
+
+
+/* 模型列表 */
+.model-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.model-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: #c9d4e6;
+  white-space: nowrap;
 }
 
 /* ───────────────────────── 对话框 ───────────────────────── */

@@ -364,98 +364,14 @@ async function doDeploy() {
   loadState();
 }
 
-/* ───────────────────────── 开发参考 ───────────────────────── */
-
-let REF_TAB = 'models';
-let KEY_LIST = [];
-
-function renderRef() {
-  const box = $('#refBody');
-  const R = window.RefData;
-  if (!R) { box.innerHTML = '<div class="ref-empty">数据未加载</div>'; return; }
-  $('#refTag').textContent = { models: '模型', endpoints: '端点', keys: '密钥' }[REF_TAB];
-
-  if (REF_TAB === 'models') {
-    const rows = R.MODELS.map((m) =>
-      '<tr><td class="k">' + esc(m.name) + '</td>' +
-      '<td class="mid">' + esc(m.id) + '</td>' +
-      '<td>' + esc(m.vendor) + '</td>' +
-      '<td style="color:var(--muted)">' + esc(m.note) + '</td></tr>').join('');
-    box.innerHTML =
-      '<div class="note-line">⚠️ Trae <b>未开放模型 API</b>。下面这份清单来自官网定价页的产品数据，' +
-      '仅用于了解当前有哪些模型可选，<b>不能用于第三方调用</b>。</div>' +
-      '<table><thead><tr><th>模型</th><th>标识</th><th>厂商</th><th>备注</th></tr></thead><tbody>' + rows + '</tbody></table>';
-    return;
-  }
-
-  if (REF_TAB === 'endpoints') {
-    let html = '<div class="note-line">这些端点来自官网前端 JS，' +
-      '<b>仅供开发参考 / 抓包对照</b>。多数需要 <code>Authorization: Cloud-IDE-JWT</code> 与设备号。' +
-      '统一前缀 <code>' + esc(R.API_HOST) + '</code></div>';
-    R.ENDPOINTS.forEach((g) => {
-      const rows = g.items.map((it) =>
-        '<tr><td class="mid" style="width:56px">' + esc(it[0]) + '</td>' +
-        '<td><code>' + esc(it[1]) + '</code></td>' +
-        '<td style="color:var(--muted)">' + esc(it[2]) + '</td></tr>').join('');
-      html += '<div class="ref-group"><h4>' + esc(g.group) + '</h4>' +
-        '<table><tbody>' + rows + '</tbody></table></div>';
-    });
-    box.innerHTML = html;
-    return;
-  }
-
-  // keys
-  const R2 = window.RefData;
-  const rows = KEY_LIST.length
-    ? '<div class="key-list">' + KEY_LIST.map((k, i) =>
-        '<div class="key-row"><span class="idx">' + (i + 1) + '</span><code>' + esc(k) + '</code></div>').join('') + '</div>'
-    : '<div class="ref-empty">尚未生成，点上方「生成」</div>';
-  box.innerHTML =
-    '<div class="note-line">⚠️ <b>这不是 Trae 的 API Key</b>（Trae 没有这种机制）。' +
-    '这是一个纯本地的强随机串生成器，可用于自建服务、面板口令等任何需要随机密钥的地方。' +
-    '随机源：<code>crypto.getRandomValues</code>（拒绝采样，无取模偏置）。</div>' +
-    '<div class="ref-tools">' +
-      '<label>条数 <input type="number" id="kCount" value="5" min="1" max="200"></label>' +
-      '<label>长度 <input type="number" id="kLen" value="32" min="4" max="128"></label>' +
-      '<label>字符集 <select id="kCharset">' +
-        R2.CHARSETS.map((c) => '<option value="' + c + '">' + c + '</option>').join('') +
-      '</select></label>' +
-      '<button class="btn small primary" id="btnGenKeys">生成</button>' +
-      '<button class="btn small ghost" id="btnCopyKeys">复制全部</button>' +
-      '<button class="btn small ghost" id="btnClearKeys">清空</button>' +
-    '</div>' + rows;
-
-  $('#btnGenKeys').addEventListener('click', () => {
-    const r = R2.generateKeys(
-      Number($('#kCount').value),
-      Number($('#kLen').value),
-      $('#kCharset').value
-    );
-    KEY_LIST = r.keys;
-    renderRef();
-    toast('已生成 ' + KEY_LIST.length + ' 条' + (r.strong ? '（强随机）' : '（弱随机）'), 'ok');
-  });
-  $('#btnCopyKeys').addEventListener('click', () => {
-    if (!KEY_LIST.length) { toast('还没有生成', 'err'); return; }
-    const text = KEY_LIST.join('\n');
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(
-        () => toast('已复制 ' + KEY_LIST.length + ' 条到剪贴板', 'ok'),
-        () => toast('复制失败', 'err')
-      );
-    } else {
-      toast('当前环境不支持剪贴板', 'err');
-    }
-  });
-  $('#btnClearKeys').addEventListener('click', () => { KEY_LIST = []; renderRef(); });
-}
-
-/* ───────────────────────── 中转站 ───────────────────────── */
+/* ───────────────────────── 接入地址 ───────────────────────── */
 
 let RELAY_POLL = null;
 let RELAY_LAST_RUNNING = null;
+let RELAY_MODELS = null;     // 模型列表缓存（运行中才拉）
+let RELAY_BUSY = false;
 
-function renderRelay() {
+async function renderRelay(opts) {
   const box = $('#relayBody');
   const R = window.Relay;
   if (!R) { box.innerHTML = '<div class="ref-empty">模块未加载</div>'; return; }
@@ -476,44 +392,91 @@ function renderRelay() {
   tag.textContent = running ? '运行中' : '未运行';
   tag.className = 'tag ' + (running ? 'ok' : 'warn');
 
+  // 运行中才拉模型列表；首次或显式刷新时拉
+  const wantModels = running && (RELAY_MODELS === null || (opts && opts.refreshModels));
+  if (wantModels) {
+    try { RELAY_MODELS = await R.models(); }
+    catch (e) { RELAY_MODELS = null; }
+  }
+  if (!running) RELAY_MODELS = null;
+
   const rows = [];
   rows.push(row('运行状态', running
     ? '<span class="ok">监听 127.0.0.1:' + s.port + '</span>'
     : '<span class="warn">' + esc(s.reason || '未启动') + '</span>'));
-  rows.push(row('API 地址', '<code>' + esc(s.baseUrlV1 || '') + '</code>'));
+  rows.push(row('接入地址', '<code>' + esc(s.baseUrlV1 || '') + '</code>'));
   rows.push(row('API Key', '<code class="relay-key">' + esc(s.apiKey || '') + '</code>'
     + ' <button class="btn tiny ghost" id="btnRelayCopy">复制</button>'));
-  rows.push(row('登录回调', '<code>127.0.0.1:' + s.callbackPort + '</code>'));
-  rows.push(row('二进制', s.binaryPresent
-    ? '<span class="ok">已内嵌</span>'
-    : '<span class="err">缺失（构建异常）</span>'));
+  if (running && RELAY_MODELS) {
+    rows.push(row('可用模型', '<span class="ok">' + RELAY_MODELS.length + ' 个</span>'
+      + ' <button class="btn tiny ghost" id="btnRelayModels">展开</button>'
+      + ' <button class="btn tiny ghost" id="btnRelaySync">同步账号</button>'));
+  } else if (running) {
+    rows.push(row('可用模型', '<span class="warn">拉取中…</span>'));
+  }
 
-  box.innerHTML =
-    '<div class="note-line">把 Trae 的模型通道反代为 <b>OpenAI 兼容 API</b>，'
-    + '服务就跑在这台手机上，不经过任何外部服务器。'
-    + '账号登录、模型列表、额度与消费记录都在<b>控制台</b>里。</div>'
-    + '<div class="relay-rows">' + rows.join('') + '</div>'
-    + (running
-      ? '<div class="ref-empty" style="margin-top:10px">客户端配置：地址填上面的 API 地址，Key 填上面那串。</div>'
-      : '<div class="relay-actions"><button class="btn small primary" id="btnRelayStart">启动中转站</button></div>');
+  const head = '<div class="note-line">把 Trae 的模型通道转成 <b>OpenAI 兼容接口</b>，'
+    + '服务就跑在这台手机上。账号只需在签到面板登录一次，会自动同步过来。</div>';
+
+  let modelList = '';
+  if (RELAY_MODELS && RELAY_MODELS.length) {
+    modelList = '<div class="model-list" id="relayModelList">'
+      + RELAY_MODELS.map((m) => '<code class="model-chip">' + esc(m) + '</code>').join('')
+      + '</div>';
+  }
+
+  let footer = '';
+  if (running) {
+    footer = '<div class="ref-empty" style="margin-top:10px">客户端填上面的接入地址与 Key 即可使用。</div>';
+  } else {
+    footer = '<div class="relay-actions"><button class="btn small primary" id="btnRelayStart">启动服务</button></div>';
+  }
+
+  box.innerHTML = head + '<div class="relay-rows">' + rows.join('') + '</div>' + modelList + footer;
 
   const btnCopy = $('#btnRelayCopy');
   if (btnCopy) btnCopy.addEventListener('click', () => {
     if (R.copy(s.apiKey || '')) toast('API Key 已复制', 'ok');
     else toast('复制失败', 'err');
   });
+
+  const btnModels = $('#btnRelayModels');
+  if (btnModels) btnModels.addEventListener('click', () => {
+    const el = $('#relayModelList');
+    if (!el) return;
+    const hidden = el.style.display === 'none';
+    el.style.display = hidden ? 'flex' : 'none';
+    btnModels.textContent = hidden ? '收起' : '展开';
+  });
+
+  const btnSync = $('#btnRelaySync');
+  if (btnSync) btnSync.addEventListener('click', async () => {
+    if (RELAY_BUSY) return;
+    RELAY_BUSY = true;
+    btnSync.disabled = true;
+    btnSync.textContent = '同步中…';
+    const r = await E.pushAllToRelay();
+    RELAY_BUSY = false;
+    if (r.ok) toast('已同步 ' + r.okCount + ' / ' + r.total + ' 个账号', r.okCount === r.total ? 'ok' : 'err');
+    else toast(r.error || '同步失败', 'err');
+    renderRelay();
+  });
+
   const btnStart = $('#btnRelayStart');
   if (btnStart) btnStart.addEventListener('click', async () => {
     btnStart.disabled = true;
     btnStart.textContent = '启动中…';
     R.start();
     const r = await R.waitReady(40000);
-    if (r.running) toast('中转站已启动', 'ok');
+    if (r.running) toast('服务已启动', 'ok');
     else toast(r.reason || '启动失败', 'err');
-    renderRelay();
+    renderRelay({ refreshModels: true });
   });
 
-  // 未运行时停止轮询，省电
+  // 模型列表默认收起，避免面板过长
+  const ml = $('#relayModelList');
+  if (ml) ml.style.display = 'none';
+
   if (!running) stopRelayPoll();
   else startRelayPoll();
 }
@@ -528,15 +491,10 @@ function startRelayPoll() {
     const R = window.Relay;
     if (!R) return;
     const s = R.status();
-    const tag = $('#relayTag');
-    if (tag) {
-      tag.textContent = s.running ? '运行中' : '未运行';
-      tag.className = 'tag ' + (s.running ? 'ok' : 'warn');
-    }
-    // 状态发生翻转时重绘
+    // 状态翻转时重绘
     if (RELAY_LAST_RUNNING !== s.running) {
       RELAY_LAST_RUNNING = s.running;
-      renderRelay();
+      renderRelay({ refreshModels: s.running });
     }
   }, 5000);
 }
@@ -667,16 +625,6 @@ function boot() {
   $('#btnSaveSettings').addEventListener('click', saveSettings);
   $('#btnClearLog').addEventListener('click', () => { $('#logs').innerHTML = ''; });
 
-  // 开发参考：标签切换
-  document.querySelectorAll('.reftab').forEach((b) => {
-    b.addEventListener('click', () => {
-      REF_TAB = b.dataset.tab;
-      document.querySelectorAll('.reftab').forEach((x) => x.classList.toggle('primary', x === b));
-      renderRef();
-    });
-  });
-  document.querySelector('.reftab[data-tab="models"]').classList.add('primary');
-  renderRef();
 
   // 中转站面板
   $('#btnRelayConsole').addEventListener('click', () => {

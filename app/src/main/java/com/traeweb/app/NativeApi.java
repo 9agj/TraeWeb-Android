@@ -254,9 +254,9 @@ public class NativeApi {
         } catch (Throwable ignored) { }
     }
 
-    /* ------------------------------------------------------------ 中转站 */
+    /* -------------------------------------------------------- 接入服务 */
 
-    /** 中转站状态：前端据此渲染面板 */
+    /** 接入服务状态：前端据此渲染面板 */
     @JavascriptInterface
     public String relayStatus() {
         try {
@@ -278,7 +278,7 @@ public class NativeApi {
         }
     }
 
-    /** 启动中转站（异步，前端轮询 relayStatus 观察结果） */
+    /** 启动接入服务（异步，前端轮询 relayStatus 观察结果） */
     @JavascriptInterface
     public void relayStart() {
         try {
@@ -328,6 +328,107 @@ public class NativeApi {
         } catch (Throwable t) {
             Log.w(TAG, "复制失败: " + safe(t.getMessage()));
         }
+    }
+
+    /**
+     * 把签到面板的凭证推送到内嵌接入服务。
+     *
+     * 接入服务只监听 loopback，而主界面是 file:///android_asset/ 页面 ——
+     * 直接 fetch 会被同源策略拦，所以由原生层代发。
+     *
+     * 用「启动 + 轮询」两段式，理由同 httpStart：@JavascriptInterface 是同步调用，
+     * 直接在里面做网络会冻结页面。
+     *
+     * @param jsonBody 接入服务 /admin/api/accounts/import 接受的请求体
+     *                 （形如 {"json":"<嵌套凭证 JSON>"}）
+     */
+    @JavascriptInterface
+    public String relayImportAccount(String jsonBody) {
+        final String id = UUID.randomUUID().toString();
+        tasks.put(id, PENDING);
+        try {
+            final RelayService relay = RelayService.get(ctx);
+            final String url = relay.baseUrl() + "/admin/api/accounts/import";
+            final String key = relay.apiKey();
+            pool.execute(() -> {
+                String result;
+                try {
+                    java.net.HttpURLConnection c = null;
+                    try {
+                        c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                        c.setRequestMethod("POST");
+                        c.setConnectTimeout(8000);
+                        c.setReadTimeout(20000);
+                        c.setDoOutput(true);
+                        c.setRequestProperty("Content-Type", "application/json");
+                        c.setRequestProperty("Authorization", "Bearer " + key);
+                        byte[] body = (jsonBody == null ? "{}" : jsonBody).getBytes(StandardCharsets.UTF_8);
+                        c.setFixedLengthStreamingMode(body.length);
+                        try (OutputStream os = c.getOutputStream()) {
+                            os.write(body);
+                        }
+                        int code = c.getResponseCode();
+                        String text = readAll(code >= 400 ? c.getErrorStream() : c.getInputStream());
+                        JSONObject o = new JSONObject();
+                        o.put("status", code);
+                        o.put("ok", code >= 200 && code < 300);
+                        o.put("body", text);
+                        result = o.toString();
+                    } finally {
+                        if (c != null) c.disconnect();
+                    }
+                } catch (Throwable t) {
+                    result = errorJson("导入失败：" + safe(t.getMessage()));
+                }
+                tasks.put(id, result);
+            });
+        } catch (Throwable t) {
+            tasks.put(id, errorJson("导入任务提交失败：" + safe(t.getMessage())));
+        }
+        return id;
+    }
+
+    /**
+     * 从接入服务拉取账号列表 / 状态（只读，走同一条原生转发通道）。
+     * @param path 形如 "/admin/api/accounts" 或 "/v1/models"
+     */
+    @JavascriptInterface
+    public String relayGet(String path) {
+        final String id = UUID.randomUUID().toString();
+        tasks.put(id, PENDING);
+        try {
+            final RelayService relay = RelayService.get(ctx);
+            final String url = relay.baseUrl() + (path == null ? "/" : path);
+            final String key = relay.apiKey();
+            pool.execute(() -> {
+                String result;
+                try {
+                    java.net.HttpURLConnection c = null;
+                    try {
+                        c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                        c.setRequestMethod("GET");
+                        c.setConnectTimeout(6000);
+                        c.setReadTimeout(20000);
+                        c.setRequestProperty("Authorization", "Bearer " + key);
+                        int code = c.getResponseCode();
+                        String text = readAll(code >= 400 ? c.getErrorStream() : c.getInputStream());
+                        JSONObject o = new JSONObject();
+                        o.put("status", code);
+                        o.put("ok", code >= 200 && code < 300);
+                        o.put("body", text);
+                        result = o.toString();
+                    } finally {
+                        if (c != null) c.disconnect();
+                    }
+                } catch (Throwable t) {
+                    result = errorJson("请求失败：" + safe(t.getMessage()));
+                }
+                tasks.put(id, result);
+            });
+        } catch (Throwable t) {
+            tasks.put(id, errorJson("任务提交失败：" + safe(t.getMessage())));
+        }
+        return id;
     }
 
     /** 供 Java 侧读取（例如把服务地址注入页面） */
