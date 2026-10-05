@@ -302,6 +302,167 @@
     return { ok: true, total: list.length, okCount: okCount };
   }
 
+  /**
+   * 浏览器登录：跳系统浏览器 → 手机号登录 → 回调自动完成。
+   *
+   * 拿到的可能是 userJwt（Cloud-IDE-JWT）或 refreshToken：
+   *   - userJwt      → 直接当 token，并用它换一次 session（走 GetUserToken 的逆路径不可行，
+   *                    所以优先要 refreshToken；只有 userJwt 时直接落地，靠后续 refresh 兜底）
+   *   - refreshToken → 走中转站的 import 通道（它能做 ExchangeToken），
+   *                    同时本地也用它换一次 JWT
+   *
+   * @param {(ms:number)=>void} onTick 轮询回调，用于更新界面提示
+   */
+  async function addAccountByBrowserLogin(onTick) {
+    const BL = window.NativeBridge && window.NativeBridge.BrowserLogin;
+    if (!BL || !BL.available) {
+      return { ok: false, error: '浏览器登录仅支持在 APK 内使用' };
+    }
+
+    const s = BL.start();
+    if (!s.ok) return { ok: false, error: s.error };
+
+    log('已生成授权链接，正在打开浏览器…', 'login');
+    BL.open(s.url);
+
+    if (!BL.open) {
+      // open 失败时把链接给出去，让用户手动打开
+      return { ok: false, error: '无法自动打开浏览器', url: s.url };
+    }
+
+    log('请在浏览器里用手机号登录 Trae（含滑块验证），完成后会自动回到 App', 'login');
+    const r = await BL.wait(180000, onTick);
+
+    if (!r) {
+      BL.stop();
+      return { ok: false, error: '等待超时（3 分钟）。请确认在浏览器里完成了登录；也可以再试一次。' };
+    }
+    if (!r.ok) {
+      BL.stop();
+      return { ok: false, error: r.error || '浏览器登录未完成' };
+    }
+
+    const p = r.params || {};
+    const userJwt = p.userJwt || p.token || p.accessToken || p.access_token || '';
+    const refreshToken = p.refreshToken || p.refresh_token || '';
+    const uid = p.uid || p.userId || p.user_id || '';
+    const nickname = p.nickname || p.screenName || p.screen_name || '';
+
+    log('已收到授权回调（'
+      + (userJwt ? 'userJwt ' + userJwt.length + ' 字符' : '')
+      + (refreshToken ? (userJwt ? ' + ' : '') + 'refreshToken' : '')
+      + '）', 'login');
+
+    // refreshToken → 换新 token。
+    // 优先交给接入服务做（它内部走 ExchangeToken 并轮换 refreshToken）；
+    // 失败时退回 userJwt 直接使用。
+    let token = userJwt;
+    let finalRefresh = refreshToken;
+    if (refreshToken) {
+      const ex = await exchangeRefreshToken(refreshToken, {
+        uid: uid,
+        userInfo: p.userInfo || '',
+        loginTraceID: p.loginTraceID || '',
+      });
+      if (ex.ok) {
+        log('refreshToken 已交给接入服务换取（会同时完成账号导入）', 'login');
+      } else {
+        log('refreshToken 换取失败，回退使用 userJwt：' + ex.error, 'login');
+      }
+    }
+
+    if (!token) {
+      BL.stop();
+      return { ok: false, error: '回调里没有可用的访问令牌（userJwt / refreshToken 均为空）' };
+    }
+
+    const exp = T.parseJwtExp(token);
+    const dev = T.randomDeviceId();
+
+    // 判重：先用 uid 对一下已有账号
+    const accountUid = uid || T.parseAccountUid(token) || null;
+    const dup = findDuplicateByUid(accountUid);
+    if (dup) {
+      updateAccount(dup.id, {
+        token: token,
+        refreshToken: finalRefresh || dup.refreshToken || null,
+        tokenUpdatedAt: new Date().toISOString(),
+        tokenAlive: true,
+        lastError: null,
+      });
+      log('账号已存在，凭证已刷新：' + (dup.name || dup.screenName || accountUid), 'login');
+      const rf = await refreshProfile(dup.id);
+      await pushToRelay(dup.id, { silent: false });
+      BL.stop();
+      return { ok: true, account: findAccount(dup.id), refreshed: true, profileSynced: rf.ok };
+    }
+
+    const acc = {
+      id: uuid(),
+      name: nickname || null,
+      session: null,                       // 浏览器登录拿不到 X-Cloudide-Session，靠 refreshToken 续期
+      refreshToken: finalRefresh || null,
+      token: token,
+      tokenUpdatedAt: new Date().toISOString(),
+      deviceId: dev,
+      accountUid: accountUid,
+      screenName: nickname || null,
+      mobileMasked: null,
+      avatarUrl: null,
+      isStudent: false,
+      isMember: false,
+      remainingCredits: -1,
+      lastCheckinDate: null,
+      lastCheckinAt: null,
+      enabled: true,
+      tokenAlive: true,
+      createdAt: new Date().toISOString(),
+      lastError: null,
+      loginMethod: 'browser',
+    };
+    addAccount(acc);
+
+    const rf = await refreshProfile(acc.id);
+    log('已通过浏览器登录添加账号 ' + (nickname || accountUid || '')
+      + (rf.ok ? '（资料已同步）' : '（资料同步失败：' + rf.error + '）'), 'login');
+
+    await pushToRelay(acc.id, { silent: false });
+
+    BL.stop();
+    return { ok: true, account: findAccount(acc.id), profileSynced: rf.ok };
+  }
+
+  /**
+   * 用 refreshToken 换新的 access/refresh 对。
+   *
+   * 不要自己拼 JSON 走 import —— auth.Parse 强制要求 accessToken 非空，
+   * 而 refreshToken 换新 token 的正确通路是服务端的 importFromCallback：
+   * 它内部会做 ExchangeToken 并轮换 refreshToken。
+   *
+   * 所以这里把回调参数还原成一条回调链接交给它处理。
+   */
+  async function exchangeRefreshToken(refreshToken, extraParams) {
+    const R = window.Relay;
+    if (!R || !R.isNative || !R.status().running) {
+      return { ok: false, error: '接入服务未运行' };
+    }
+    // 拼成服务端 ParseCallback 能识别的链接形式
+    const qs = Object.keys(extraParams || {})
+      .filter((k) => extraParams[k] !== undefined && extraParams[k] !== null && extraParams[k] !== '')
+      .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(extraParams[k]))
+      .join('&');
+    const callback = 'http://127.0.0.1:18081/authorize?refreshToken='
+      + encodeURIComponent(refreshToken) + (qs ? '&' + qs : '');
+
+    try {
+      // 走原生转发（file:// 页面 fetch 不到 127.0.0.1）
+      const r = await R.importCallback(callback);
+      return { ok: true, result: r };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   /** 手机号 + 验证码登录并添加（绕开滑块：发码在浏览器做，登录接口不校验滑块） */
   async function addAccountBySms(input) {
     const phone = T.normalizeMobile(input.mobile);
@@ -458,6 +619,7 @@
     streak: streak,
     addAccountBySession: addAccountBySession,
     addAccountBySms: addAccountBySms,
+    addAccountByBrowserLogin: addAccountByBrowserLogin,
     refreshProfile: refreshProfile,
     ensureToken: ensureToken,
     checkinOne: checkinOne,

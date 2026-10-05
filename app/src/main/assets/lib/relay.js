@@ -141,6 +141,32 @@
     try { return JSON.parse(r.body); } catch (e) { return { ok: true }; }
   }
 
+  /**
+   * 用回调链接导入账号。
+   *
+   * 这是服务端为「授权回调」设计的通路（importFromCallback）：
+   * 它会解析链接里的 refreshToken 做 ExchangeToken + 轮换，
+   * 再用 GetUserInfo 补全 uid/nickname。比手拼嵌套 JSON 可靠得多
+   * —— auth.Parse 强制要求 accessToken 非空，而回调场景本来就常常只有 refreshToken。
+   */
+  async function importCallback(callbackUrl) {
+    if (!isNative || !Native.relayImportAccount) throw new Error('原生桥不可用');
+    if (!callbackUrl) throw new Error('回调链接为空');
+
+    // 服务端接受「纯字符串 body」或 {"callback_url":...}，这里用后者更明确
+    const taskId = Native.relayImportAccount(JSON.stringify({ callback_url: callbackUrl }));
+    const r = await poll(taskId, 40000);
+    if (!r.ok) {
+      let msg = String(r.body || '').slice(0, 200);
+      try {
+        const j = JSON.parse(r.body);
+        msg = (j.error && (j.error.message || j.error.code)) || (j.message || msg);
+      } catch (e) { /* 保留原文 */ }
+      throw new Error('导入被拒：' + msg);
+    }
+    try { return JSON.parse(r.body); } catch (e) { return { ok: true }; }
+  }
+
   window.Relay = {
     isNative: isNative,
     status: status,
@@ -154,5 +180,6 @@
     models: models,
     accounts: accounts,
     importAccount: importAccount,
+    importCallback: importCallback,
   };
 })();

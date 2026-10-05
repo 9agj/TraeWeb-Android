@@ -24,7 +24,7 @@
     <span id="clock" class="clock" title="北京时间"></span>
     <button id="btnRefreshAll" class="btn ghost" title="刷新全部账号资料与积分">刷新</button>
     <button id="btnAdd" class="btn ghost">粘贴凭证</button>
-    <button id="btnAddSms" class="btn primary">+ 手机号登录</button>
+    <button id="btnAddSms" class="btn primary">+ 浏览器登录</button>
   </div>
 </header>
 
@@ -165,53 +165,39 @@
   </form>
 </dialog>
 
-<!-- ── 手机号登录 ── -->
+<!-- ── 浏览器登录 ── -->
 <dialog id="dlgSms">
-  <form method="dialog" class="dlg">
-    <h3>手机号登录</h3>
+  <div class="dlg">
+    <h3>浏览器登录</h3>
 
     <div class="sms-steps">
       <div class="sms-step">
         <span class="n">1</span>
-        <div>在浏览器打开 <a href="https://www.trae.cn/" target="_blank" rel="noreferrer">www.trae.cn</a>
-          → 点登录 → 填手机号 → <b>完成滑块</b> → 收到短信验证码<br>
-          <em>先别在你自己的浏览器里提交验证码</em></div>
+        <div>点下方按钮，App 会<b>跳到系统浏览器</b>并打开 Trae 登录页</div>
       </div>
       <div class="sms-step">
         <span class="n">2</span>
-        <div>把收到的验证码填到下面，由本服务完成登录</div>
+        <div>在浏览器里<b>填手机号 → 完成滑块 → 提交验证码</b></div>
+      </div>
+      <div class="sms-step">
+        <span class="n">3</span>
+        <div>登录成功后浏览器会自动跳回，<b>App 自动完成登录</b>，无需其他操作</div>
       </div>
     </div>
 
-    <div class="grid2">
-      <label class="field">
-        <span>手机号</span>
-        <input type="tel" id="inSmsMobile" placeholder="11 位手机号" inputmode="numeric" maxlength="11">
-      </label>
-      <label class="field">
-        <span>短信验证码</span>
-        <input type="text" id="inSmsCode" placeholder="6 位数字" inputmode="numeric" maxlength="8">
-      </label>
-    </div>
-
-    <label class="field">
-      <span>备注名（选填）</span>
-      <input type="text" id="inSmsName" placeholder="主号 / 小号">
-    </label>
-
     <p class="note">
-      为什么要绕这一下：Trae 的<b>发码接口有滑块风控</b>（服务端过不去），
-      但<b>登录接口没有</b>。所以由你在浏览器完成滑块拿码、服务端用码换会话（约 14 天有效）。
-      凭证只保存在本机 <code>data/config.json</code>。
+      相比手动粘贴凭证，这种方式不用抓包：App 在本机起一个临时回调端口，
+      Trae 授权完成后把凭证直接送回来。凭证只保存在本机。
     </p>
 
     <div id="smsError" class="error" hidden></div>
+    <div id="smsStatus" class="note" hidden></div>
 
     <div class="dlg-actions">
       <button type="button" id="btnSmsCancel" class="btn ghost">取消</button>
-      <button type="submit" id="btnSmsSubmit" class="btn primary">登录并添加</button>
+      <button type="button" id="btnSmsSubmit" class="btn primary">打开浏览器登录</button>
     </div>
-  </form>
+  </div>
 </dialog>
 
 <!-- ── GitHub 授权 ── -->

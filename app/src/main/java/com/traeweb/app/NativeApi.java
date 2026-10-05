@@ -435,4 +435,166 @@ public class NativeApi {
     public SharedPreferences prefs() {
         return store;
     }
+
+    /* -------------------------------------------------------- 浏览器登录 */
+
+    /** 登录用回调端口。避开中转站的 18080，防止与它的 /authorize 抢绑定。 */
+    private static final int LOGIN_CALLBACK_PORT = 18081;
+
+    private LocalCallbackServer loginServer;
+    private static final String LOGIN_RESULT_KEY = "login_callback_result";
+
+    /**
+     * 发起浏览器登录：起本地回调监听 → 返回授权链接。
+     *
+     * 前端拿到链接后用 openExternal() 交给系统浏览器；用户在浏览器里
+     * 用手机号登录（含滑块），Trae 完成后会 302 回本地端口，
+     * 由监听器接住并写入 store，前端用 loginResult() 轮询取回。
+     *
+     * @return JSON：{ok, url, callback, port} 或 {ok:false, error}
+     */
+    @JavascriptInterface
+    public String startBrowserLogin() {
+        try {
+            if (loginServer == null) {
+                loginServer = new LocalCallbackServer(LOGIN_CALLBACK_PORT);
+            }
+            // 开始前先清掉上一轮结果，避免前端读到陈旧数据
+            store.edit().remove(LOGIN_RESULT_KEY).apply();
+
+            final boolean started = loginServer.start(result -> {
+                JSONObject o = new JSONObject();
+                try {
+                    o.put("ok", result.ok);
+                    o.put("error", result.error == null ? "" : result.error);
+                    JSONObject p = new JSONObject();
+                    for (Map.Entry<String, String> e : result.params.entrySet()) {
+                        p.put(e.getKey(), e.getValue());
+                    }
+                    o.put("params", p);
+                    o.put("rawQuery", result.rawQuery == null ? "" : result.rawQuery);
+                } catch (Throwable ignored) { }
+                store.edit().putString(LOGIN_RESULT_KEY, o.toString()).apply();
+                Log.i(TAG, "登录回调已落库: ok=" + result.ok);
+            });
+
+            if (!started) {
+                JSONObject o = new JSONObject();
+                o.put("ok", false);
+                o.put("error", "本地回调端口 " + LOGIN_CALLBACK_PORT + " 被占用，无法启动登录监听");
+                return o.toString();
+            }
+
+            String callback = loginServer.callbackUrl();
+            String url = buildAuthUrl(callback);
+
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("url", url);
+            o.put("callback", callback);
+            o.put("port", LOGIN_CALLBACK_PORT);
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("发起登录失败：" + safe(t.getMessage()));
+        }
+    }
+
+    /**
+     * 构造 Trae 授权链接。
+     *
+     * 参数照抄网页端授权页自身的构造方式（auth_from=solo / login_channel=native_ide），
+     * 只把 auth_callback_url 换成本地回调 —— 这是整套流程能自动回到 App 的关键。
+     */
+    private String buildAuthUrl(String callback) {
+        StringBuilder sb = new StringBuilder("https://www.trae.cn/authorization?");
+        sb.append("login_version=1");
+        sb.append("&auth_from=solo");
+        sb.append("&login_channel=native_ide");
+        sb.append("&plugin_version=2.3.24254");
+        sb.append("&auth_type=local");
+        sb.append("&client_id=").append(encode("ono9krqynydwx5"));
+        sb.append("&redirect=0");
+        sb.append("&login_trace_id=").append(encode(java.util.UUID.randomUUID().toString()));
+        sb.append("&auth_callback_url=").append(encode(callback));
+        final String mid = randomHex(32);
+        final String did = randomDigits(19);
+        sb.append("&machine_id=").append(mid);
+        sb.append("&device_id=").append(did);
+        sb.append("&x_device_id=").append(did);
+        sb.append("&x_machine_id=").append(mid);
+        sb.append("&x_device_brand=").append(encode("Xiaomi"));
+        sb.append("&x_device_type=").append("android");
+        sb.append("&x_os_version=").append(encode(android.os.Build.VERSION.RELEASE));
+        sb.append("&x_env=");
+        sb.append("&x_app_version=").append("0.1.7");
+        sb.append("&x_app_type=").append("stable");
+        sb.append("&hide_saas_login=true");
+        return sb.toString();
+    }
+
+    /** 取回浏览器登录结果。返回空串表示尚未完成。 */
+    @JavascriptInterface
+    public String loginResult() {
+        try {
+            String v = store.getString(LOGIN_RESULT_KEY, "");
+            return v == null ? "" : v;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 清掉登录结果（前端消费后调用） */
+    @JavascriptInterface
+    public void clearLoginResult() {
+        try {
+            store.edit().remove(LOGIN_RESULT_KEY).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /** 关闭登录回调监听 */
+    @JavascriptInterface
+    public void stopBrowserLogin() {
+        try {
+            if (loginServer != null) loginServer.close();
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 用系统浏览器打开链接。file:// 页面里 window.open 常被拦，
+     * 且我们要的是「跳到浏览器」，所以必须走原生 Intent。
+     */
+    @JavascriptInterface
+    public void openExternal(String url) {
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Throwable t) {
+            Log.w(TAG, "打开浏览器失败: " + safe(t.getMessage()));
+            toast("无法打开浏览器：" + safe(t.getMessage()));
+        }
+    }
+
+    private static String encode(String s) {
+        try {
+            return java.net.URLEncoder.encode(s == null ? "" : s, "UTF-8");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String randomHex(int n) {
+        StringBuilder sb = new StringBuilder();
+        java.security.SecureRandom r = new java.security.SecureRandom();
+        while (sb.length() < n) sb.append(Integer.toHexString(r.nextInt(16)));
+        return sb.substring(0, n);
+    }
+
+    private static String randomDigits(int n) {
+        StringBuilder sb = new StringBuilder();
+        java.security.SecureRandom r = new java.security.SecureRandom();
+        for (int i = 0; i < n; i++) sb.append(r.nextInt(10));
+        return sb.toString();
+    }
 }

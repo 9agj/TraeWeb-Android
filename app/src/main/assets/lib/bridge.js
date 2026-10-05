@@ -68,4 +68,81 @@
   }
 
   window.NativeBridge = { isNative, http, jparse, b64urlDecode, utf8, toBase64 };
+
+  /* ---------------------------------------------------- 浏览器登录桥 */
+
+  /**
+   * 浏览器登录：起本地回调监听 → 拿授权链接 → 交给系统浏览器。
+   *
+   * 流程：
+   *   1. startBrowserLogin() 在本机 loopback 起监听，返回带
+   *      auth_callback_url=http://127.0.0.1:18081/authorize 的授权链接
+   *   2. openExternal() 用系统浏览器打开，用户在里面用手机号登录
+   *   3. Trae 授权完成 → 302 回本地端口 → 原生侧解析并存库
+   *   4. waitForBrowserLogin() 轮询 loginResult() 取回凭证
+   */
+  const BrowserLogin = {
+    available: !!(isNative && Native.startBrowserLogin),
+
+    /** 开始登录，返回 {ok, url, callback} */
+    start() {
+      if (!this.available) return { ok: false, error: '当前环境不支持（需在 APK 内运行）' };
+      try {
+        return JSON.parse(Native.startBrowserLogin());
+      } catch (e) {
+        return { ok: false, error: '发起登录失败：' + e.message };
+      }
+    },
+
+    /** 用系统浏览器打开链接 */
+    open(url) {
+      if (isNative && Native.openExternal) {
+        Native.openExternal(url);
+        return true;
+      }
+      return false;
+    },
+
+    /** 读取一次结果；未完成返回 null */
+    poll() {
+      if (!this.available) return null;
+      try {
+        const raw = Native.loginResult();
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch (e) {
+        return null;
+      }
+    },
+
+    /** 等待结果（轮询到超时） */
+    async wait(timeoutMs, onTick) {
+      const limit = timeoutMs || 180000;
+      const step = 1200;
+      for (let waited = 0; waited < limit; waited += step) {
+        const r = this.poll();
+        if (r) {
+          this.clear();
+          return r;
+        }
+        if (onTick) { try { onTick(waited); } catch (e) { /* 忽略 */ } }
+        await new Promise((res) => setTimeout(res, step));
+      }
+      return null;
+    },
+
+    clear() {
+      if (isNative && Native.clearLoginResult) {
+        try { Native.clearLoginResult(); } catch (e) { /* 忽略 */ }
+      }
+    },
+
+    stop() {
+      if (isNative && Native.stopBrowserLogin) {
+        try { Native.stopBrowserLogin(); } catch (e) { /* 忽略 */ }
+      }
+    },
+  };
+
+  window.NativeBridge.BrowserLogin = BrowserLogin;
 })();

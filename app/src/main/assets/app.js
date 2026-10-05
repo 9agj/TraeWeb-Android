@@ -555,28 +555,59 @@ function setupDialogs() {
 
   $('#btnAddSms').addEventListener('click', () => {
     $('#smsError').hidden = true;
-    $('#inSmsMobile').value = ''; $('#inSmsCode').value = ''; $('#inSmsName').value = '';
+    const st = $('#smsStatus');
+    st.hidden = true;
+    st.textContent = '';
+    const btn = $('#btnSmsSubmit');
+    btn.disabled = false;
+    btn.textContent = '打开浏览器登录';
     dlgSms.showModal();
   });
-  $('#btnSmsCancel').addEventListener('click', () => dlgSms.close());
+  $('#btnSmsCancel').addEventListener('click', () => {
+    if (window.NativeBridge && window.NativeBridge.BrowserLogin) {
+      window.NativeBridge.BrowserLogin.stop();
+    }
+    dlgSms.close();
+  });
 
-  $('#dlgSms').querySelector('form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = $('#btnSmsSubmit'), err = $('#smsError');
+  // 浏览器登录：跳浏览器 → 用户手机号登录 → 回调自动完成
+  $('#btnSmsSubmit').addEventListener('click', async () => {
+    const btn = $('#btnSmsSubmit');
+    const err = $('#smsError');
+    const st = $('#smsStatus');
     err.hidden = true;
-    const mobile = $('#inSmsMobile').value.trim();
-    const code = $('#inSmsCode').value.trim();
-    if (!/^1[3-9]\d{9}$/.test(mobile)) { err.textContent = '请输入正确的 11 位手机号'; err.hidden = false; return; }
-    if (!/^\d{4,8}$/.test(code)) { err.textContent = '请输入收到的短信验证码'; err.hidden = false; return; }
-    btn.disabled = true; btn.textContent = '登录中…';
-    const r = await E.addAccountBySms({ mobile: mobile, code: code, name: $('#inSmsName').value.trim() || null });
-    btn.disabled = false; btn.textContent = '登录并添加';
+    st.hidden = true;
+
+    btn.disabled = true;
+    btn.textContent = '等待浏览器登录…';
+    st.textContent = '已打开浏览器，请在其中完成登录。完成后本页会自动继续。';
+    st.hidden = false;
+
+    const t0 = Date.now();
+    const r = await E.addAccountByBrowserLogin((waited) => {
+      const left = Math.max(0, 180 - Math.floor(waited / 1000));
+      st.textContent = '等待浏览器完成登录… 剩余 ' + left + ' 秒';
+    });
+
+    btn.disabled = false;
+    btn.textContent = '打开浏览器登录';
+
     if (r.ok) {
       dlgSms.close();
-      toast('登录成功，账号已添加', 'ok');
-      logLine('短信登录成功：' + ((r.account && (r.account.screenName || r.account.name)) || '账号'), 'ok');
+      toast(r.refreshed ? '凭证已更新' : '登录成功', 'ok');
+      logLine('浏览器登录成功：'
+        + ((r.account && (r.account.screenName || r.account.name || r.account.accountUid)) || '账号')
+        + (r.refreshed ? '（已有账号，凭证已刷新）' : ''), 'ok');
       loadState();
-    } else { err.textContent = r.error || '登录失败'; err.hidden = false; }
+    } else {
+      err.textContent = r.error || '登录失败';
+      err.hidden = false;
+      st.hidden = true;
+      // 浏览器没打开时把链接给出来，允许手动打开
+      if (r.url) {
+        logLine('可手动打开此链接完成登录：' + r.url, 'warn');
+      }
+    }
   });
 
   $('#btnGitHub').addEventListener('click', () => { $('#ghError').hidden = true; dlgGh.showModal(); });
