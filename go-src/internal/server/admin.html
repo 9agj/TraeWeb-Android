@@ -206,6 +206,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       <span class="ic">◉</span>账号管理<span class="cnt" id="cntAcct">0</span></div>
     <div class="item" data-view="add" onclick="go('add',this)">
       <span class="ic">＋</span>添加账号</div>
+    <div class="item" data-view="balance" onclick="go('balance',this)">
+      <span class="ic">◐</span>Token 余额</div>
     <div class="item" data-view="credits" onclick="go('credits',this)">
       <span class="ic">◎</span>额度监控</div>
     <div class="group">设置</div>
@@ -230,6 +232,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 let VIEW = 'overview';
 let ACCOUNTS = [];
 let CREDITS = [];
+let SUMMARY = null;
+let FETCHED_AT = '';
 // 服务端会把当前 Key 注入为 window.__TW2A_KEY__（见 admin.go 的 adminPage）。
 // 本地缓存作为回退，优先用服务端注入的权威值。
 let KEY = (typeof window.__TW2A_KEY__ === 'string' && window.__TW2A_KEY__)
@@ -288,7 +292,7 @@ function go(view, el) {
 
 function refreshActive() {
   if (VIEW === 'accounts') { loadAccounts(); }
-  else if (VIEW === 'credits') { loadCredits(); }
+  else if (VIEW === 'credits' || VIEW === 'balance') { loadCredits(); }
   else { render(); }
   toast('已刷新');
 }
@@ -312,7 +316,9 @@ async function loadCredits() {
   try {
     const d = await api('/admin/api/credits');
     CREDITS = (d && (d.accounts || d.items)) || [];
-    render();
+    SUMMARY = (d && d.summary) || null;
+    FETCHED_AT = (d && d.fetched_at) || '';
+    if (VIEW === 'accounts' || VIEW === 'overview' || VIEW === 'balance') render();
   } catch (e) {
     $('main').innerHTML = errBlock('读取额度失败', e.message);
   }
@@ -331,6 +337,7 @@ function render() {
   if (VIEW === 'overview') return viewOverview(m);
   if (VIEW === 'accounts') return viewAccounts(m);
   if (VIEW === 'add') return viewAdd(m);
+  if (VIEW === 'balance') return viewBalance(m);
   if (VIEW === 'credits') return viewCredits(m);
   if (VIEW === 'key') return viewKey(m);
   if (VIEW === 'usage') return viewUsage(m);
@@ -349,9 +356,22 @@ function viewOverview(m) {
     + '<div class="stats">'
     +   stat('账号总数', total)
     +   stat('已启用', enabled)
-    +   stat('积分合计', CREDITS.length ? fmt(creditSum) : '—')
+    +   stat('Token 余额', SUMMARY ? fmt(SUMMARY.remain) : (CREDITS.length ? fmt(creditSum) : '—'))
     +   stat('即将过期', soon)
     + '</div>'
+    + (SUMMARY ? '<div class="card" style="cursor:pointer" onclick="go(\'balance\')">'
+        + '<div style="display:flex;align-items:baseline;gap:9px;margin-bottom:9px">'
+        +   '<span style="font-size:22px;font-weight:600;color:'
+        +   ((SUMMARY.remain_pct||0) > 50 ? 'var(--ok)' : (SUMMARY.remain_pct||0) > 20 ? 'var(--warn)' : 'var(--bad)')
+        +   '">' + fmt(SUMMARY.remain) + '</span>'
+        +   '<span style="color:var(--dim);font-size:12.5px">/ ' + fmt(SUMMARY.limit) + ' 积分</span>'
+        +   '<span style="margin-left:auto;color:var(--dim);font-size:11.5px">查看明细 ›</span>'
+        + '</div>'
+        + '<div style="height:7px;background:var(--bg);border:1px solid var(--border);border-radius:4px;overflow:hidden">'
+        +   '<div style="height:100%;width:' + (SUMMARY.remain_pct||0).toFixed(1) + '%;background:'
+        +   ((SUMMARY.remain_pct||0) > 50 ? 'var(--ok)' : (SUMMARY.remain_pct||0) > 20 ? 'var(--warn)' : 'var(--bad)')
+        +   '"></div></div>'
+        + '</div>' : '')
     + (soon > 0 ? '<div class="note warn">有 ' + soon + ' 个账号的凭证将在 24 小时内过期，'
         + '点击左侧「账号管理」可刷新。</div>' : '')
     + (cooling > 0 ? '<div class="note warn">' + cooling + ' 个账号处于冷却中（上游限流）。</div>' : '')
@@ -462,6 +482,102 @@ function viewAdd(m) {
     +   '<input type="text" id="impRefresh" placeholder="yt..."></div>'
     +   '<div class="row"><button class="btn" onclick="importManual()">导入</button></div>'
     + '</div>';
+}
+
+/* ── Token 余额 ── */
+function viewBalance(m) {
+  if (CREDITS.length === 0) {
+    m.innerHTML = '<h2>Token 余额</h2><div class="sub">实时向上游查询各账号积分</div>'
+      + '<div class="card"><div class="empty"><span class="spin"></span>正在查询…</div></div>';
+    loadCredits();
+    return;
+  }
+
+  const sm = SUMMARY || {};
+  const pct = Number(sm.remain_pct || 0);
+  const barColor = pct > 50 ? 'var(--ok)' : pct > 20 ? 'var(--warn)' : 'var(--bad)';
+
+  // 总览卡片
+  let html = '<h2>Token 余额</h2>'
+    + '<div class="sub">' + (FETCHED_AT ? '数据时间 ' + esc(FETCHED_AT) : '实时向上游查询')
+    + ' · 点「刷新」重新拉取</div>';
+
+  html += '<div class="card">'
+    + '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">'
+    +   '<div style="font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;color:'
+    +   barColor + '">' + fmt(sm.remain) + '</div>'
+    +   '<div style="color:var(--dim);font-size:13px">/ ' + fmt(sm.limit) + ' 积分可用</div>'
+    +   '<div style="margin-left:auto;color:var(--dim);font-size:12px">'
+    +     (sm.healthy != null ? (sm.healthy + '/' + sm.total + ' 账号健康') : '') + '</div>'
+    + '</div>'
+    + '<div style="height:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;overflow:hidden">'
+    +   '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + barColor + '"></div>'
+    + '</div>'
+    + '<div style="display:flex;justify-content:space-between;margin-top:7px;color:var(--dim);font-size:11.5px">'
+    +   '<span>已用 ' + fmt(sm.used) + '</span>'
+    +   '<span>' + pct.toFixed(1) + '% 剩余</span>'
+    + '</div>'
+    + '</div>';
+
+  // 明细统计
+  html += '<div class="stats">'
+    + stat('剩余合计', fmt(sm.remain))
+    + stat('已用合计', fmt(sm.used))
+    + stat('总量', fmt(sm.limit))
+    + stat('今日可领', fmt(sm.checkin_pending))
+    + '</div>';
+
+  // 每账号明细
+  html += '<div class="card" style="padding:0"><table>'
+    + '<thead><tr><th>账号</th><th class="num">剩余</th><th class="num">已用</th>'
+    + '<th class="num">总量</th><th>占比</th><th>状态</th></tr></thead><tbody>';
+
+  CREDITS.forEach((c) => {
+    const bs = [];
+    if (c.error) {
+      bs.push(badge('查询失败', 'bad'));
+    } else {
+      if (c.disabled) bs.push(badge('已禁用', 'bad'));
+      else if (!c.enabled) bs.push(badge('已停用', 'mut'));
+      else if (c.cooling) {
+        // 区分限流冷却与错误冷却，之前统一显示「冷却中」看不出原因
+        const label = c.cool_kind === 'soft_rate' ? '限流冷却'
+          : c.cool_kind === 'plan_limit' ? '权益不足'
+          : c.cool_kind === 'error_threshold' ? '错误冷却' : '冷却中';
+        bs.push(badge(label, 'warn'));
+      } else {
+        bs.push(badge('正常', 'ok'));
+      }
+      if (c.checkin_enable) bs.push(badge('可领 ' + fmt(c.checkin_credits), 'ok'));
+    }
+
+    let row;
+    if (c.error) {
+      row = '<tr><td>' + esc(c.nickname || c.uid) + '</td>'
+        + '<td colspan="5" style="color:var(--bad)">' + esc(c.error) + '</td></tr>';
+    } else {
+      const p = c.limit > 0 ? (c.remain / c.limit * 100) : 0;
+      const col = p > 50 ? 'var(--ok)' : p > 20 ? 'var(--warn)' : 'var(--bad)';
+      row = '<tr>'
+        + '<td>' + esc(c.nickname || '(未命名)')
+        +   '<br><span style="color:var(--dim);font-size:11px">' + esc(c.uid || '') + '</span></td>'
+        + '<td class="num" style="color:' + col + ';font-weight:600">' + fmt(c.remain) + '</td>'
+        + '<td class="num">' + fmt(c.used) + '</td>'
+        + '<td class="num">' + fmt(c.limit) + '</td>'
+        + '<td style="min-width:80px">'
+        +   '<div style="height:5px;background:var(--bg);border-radius:3px;overflow:hidden">'
+        +   '<div style="height:100%;width:' + p.toFixed(1) + '%;background:' + col + '"></div></div>'
+        + '</td>'
+        + '<td>' + bs.join('') + '</td>'
+        + '</tr>';
+    }
+    html += row;
+  });
+
+  html += '</tbody></table></div>'
+    + '<div class="row"><button class="btn pri" onclick="loadCredits()">刷新余额</button></div>';
+
+  m.innerHTML = html;
 }
 
 /* ── 额度监控 ── */

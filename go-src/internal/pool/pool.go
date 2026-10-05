@@ -1,4 +1,4 @@
-﻿// Package pool 账号池：内存索引 + 冷却/禁用状态机 + state.json 持久化。
+// Package pool 账号池：内存索引 + 冷却/禁用状态机 + state.json 持久化。
 // 挑选策略：healthy 账号中剩余积分最多者（SPEC §4.7）。
 package pool
 
@@ -47,6 +47,9 @@ type Status struct {
 	Disabled bool `json:"disabled"`
 	Enabled  bool `json:"enabled"`
 	ErrCount int   `json:"err_count,omitempty"`
+	// CoolKind 冷却类型（plan_limit / soft_rate / error_threshold），未冷却时为空。
+	// 界面据此区分「限流冷却」和「连续错误冷却」，避免混为一谈。
+	CoolKind string `json:"cool_kind,omitempty"`
 }
 
 type entry struct {
@@ -57,6 +60,8 @@ type entry struct {
 	reason   string
 	until    time.Time
 	errCount int
+	// kind 记录本次冷却的类型，供界面区分「限流冷却」与「错误冷却」。
+	kind CoolKind
 }
 
 func (e *entry) healthy(now time.Time) bool {
@@ -76,6 +81,8 @@ type stateEntry struct {
 	Enabled  *bool     `json:"enabled,omitempty"` // 指针：旧文件缺省时按 true 处理，不写回脏值
 	Reason   string    `json:"reason,omitempty"`
 	Until    time.Time `json:"until,omitempty"`
+	// CoolKind 以字符串持久化：数字枚举若将来增删会错位，字符串不会。
+	CoolKind string `json:"cool_kind,omitempty"`
 }
 
 // stateFile 持久化格式。
@@ -157,10 +164,11 @@ func (p *Pool) SetEnabled(uid string, enabled bool, reason string) bool {
 		e.reason = reason
 	}
 	if enabled {
-		// 重新启用时清掉软关闭的 reason；disabled/cooling 不动
-		if e.reason != "" && !e.disabled && e.until.IsZero() {
-			e.reason = ""
-		}
+		// 重新启用时清掉软关闭的 reason。
+		// 之前只在 until.IsZero() 时清，导致「停用→启用」后若冷却未到期，
+		// reason 会残留成 "user disabled"，界面显示误导（看起来像被停用，
+		// 实际是冷却中）。这里改为总是清 —— 用户显式启用就该覆盖旧原因。
+		e.reason = ""
 	}
 	p.saveLocked()
 	return true
@@ -212,8 +220,24 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 		e.until = time.Now().Add(d)
 		e.reason = reason
 		e.errCount = 0
+		e.kind = kind
 	}
 	p.saveLocked()
+}
+
+
+// parseCoolKind 把持久化的字符串还原成枚举；未知值按 CoolErr 处理。
+func parseCoolKind(s string) CoolKind {
+	switch s {
+	case "plan_limit":
+		return CoolPlan
+	case "soft_rate":
+		return CoolSoft
+	case "error_threshold":
+		return CoolErr
+	default:
+		return CoolErr
+	}
 }
 
 // Disable 永久禁用（session 失效），需人工重登后手工恢复或文件替换。
@@ -252,6 +276,7 @@ func (p *Pool) NoteError(uid string, threshold int, d time.Duration) {
 			e.until = time.Now().Add(d)
 			e.reason = "consecutive errors"
 			e.errCount = 0
+			e.kind = CoolErr
 		}
 	}
 	p.saveLocked()
@@ -315,7 +340,16 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		Disabled: e.disabled,
 		Enabled:  e.enabled,
 		ErrCount: e.errCount,
+		CoolKind: coolKindOf(e, now),
 	}
+}
+
+// coolKindOf 把枚举转成对外字符串；未冷却时返回空串。
+func coolKindOf(e *entry, now time.Time) string {
+	if e.until.IsZero() || !now.Before(e.until) {
+		return ""
+	}
+	return e.kind.String()
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +377,7 @@ func (p *Pool) load() {
 			enabled:  enabled,
 			reason:   s.Reason,
 			until:    s.Until,
+			kind:     parseCoolKind(s.CoolKind),
 		}
 	}
 }
@@ -358,6 +393,7 @@ func (p *Pool) saveLocked() {
 			Disabled: e.disabled,
 			Reason:   e.reason,
 			Until:    e.until,
+			CoolKind: coolKindOf(e, time.Now()),
 		}
 		// 仅在软关闭时写 enabled=false；默认 true 用 omitempty 省略，旧版本读为 true。
 		if !e.enabled {

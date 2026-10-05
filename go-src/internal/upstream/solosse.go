@@ -56,12 +56,33 @@ func (e *SOLOStreamError) Error() string {
 	return fmt.Sprintf("solo error code=%d msg=%s", e.Code, e.Msg)
 }
 
-// Kind 将 SSE 流内错误分类。1005 → ErrPlanLimit；其余归 ErrClient。
+// 上游业务错误码（实测）。
+const (
+	CodePlanLimit  int64 = 1005 // plan 权益不足
+	CodeRateLimit  int64 = 4011 // 请求过于频繁
+	CodeQuotaEmpty int64 = 4001 // 参数/配额异常
+)
+
+// Kind 将 SSE 流内错误分类，pool 据此决定冷却时长。
+//
+// 关键：4011 是**限流**，不是客户端错误。之前一律归 ErrClient，导致
+// 60 秒能恢复的限流走 NoteError 累积路径、被放大成 10 分钟冷却
+// （ErrThresh=3 次 × ErrCooldown=10m），期间 Pick() 找不到健康账号 → 503。
+// 现在按限流处理：短冷却且不累计错误计数。
 func (e *SOLOStreamError) Kind() ErrKind {
-	if e.Code == 1005 {
+	switch e.Code {
+	case CodePlanLimit:
 		return ErrPlanLimit
+	case CodeRateLimit:
+		return ErrSoftRate
+	default:
+		return ErrClient
 	}
-	return ErrClient
+}
+
+// IsRateLimit 供上层判断是否为限流（用于日志与界面提示）。
+func (e *SOLOStreamError) IsRateLimit() bool {
+	return e.Code == CodeRateLimit
 }
 
 // ParseSOLOLine 解析一条事件（eventName 为 event 行值，dataLine 为 data 行值）。

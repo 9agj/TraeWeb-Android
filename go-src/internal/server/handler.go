@@ -435,6 +435,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				switch se.Kind() {
 				case upstream.ErrPlanLimit:
 					h.cfg.Pool.Cooldown(acct.UID, pool.CoolPlan, h.cfg.PlanCooldown, "plan 权益不足")
+				case upstream.ErrSoftRate:
+					// 4011 限流 → 短冷却，不累计错误计数（见 handleStreamError 注释）
+					h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "4011 rate limit")
 				default:
 					h.cfg.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				}
@@ -460,6 +463,10 @@ func (h *Handler) handleStreamError(uid string, se *upstream.SOLOStreamError) {
 	switch se.Kind() {
 	case upstream.ErrPlanLimit:
 		h.cfg.Pool.Cooldown(uid, pool.CoolPlan, h.cfg.PlanCooldown, "plan 权益不足")
+	case upstream.ErrSoftRate:
+		// 4011 限流：短冷却，且**不走 NoteError**。
+		// 走 NoteError 会在 3 次后触发 10 分钟中冷却，把几十秒能恢复的限流放大 10 倍。
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "4011 rate limit")
 	default:
 		h.cfg.Pool.NoteError(uid, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 	}

@@ -55,7 +55,9 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 		CheckinCredits int64  `json:"checkin_credits"`
 		CheckinEnable  bool   `json:"checkin_enable"`
 		Cooling        bool   `json:"cooling"`
+		CoolKind       string `json:"cool_kind,omitempty"`
 		Disabled       bool   `json:"disabled"`
+		Enabled        bool   `json:"enabled"`
 		Error          string `json:"error,omitempty"`
 	}
 
@@ -75,7 +77,9 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 			ac.UID = s.UID
 			ac.Nickname = s.Nickname
 			ac.Cooling = s.Cooling
+			ac.CoolKind = s.CoolKind
 			ac.Disabled = s.Disabled
+			ac.Enabled = s.Enabled
 			remain, limit, used, packs, err := h.cfg.Upstream.EntUsage(a)
 			if err != nil {
 				ac.Error = "ent_usage: " + err.Error()
@@ -96,8 +100,40 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
+	// 汇总：控制台顶部「Token 余额」卡片直接用，避免前端重复计算口径
+	var sumRemain, sumLimit, sumUsed int64
+	var sumCheckin int64
+	healthy := 0
+	for _, a := range out {
+		if a.Error != "" {
+			continue
+		}
+		sumRemain += a.Remain
+		sumLimit += a.Limit
+		sumUsed += a.Used
+		if a.CheckinEnable {
+			sumCheckin += a.CheckinCredits
+		}
+		if !a.Cooling && !a.Disabled && a.Enabled {
+			healthy++
+		}
+	}
+	pct := 0.0
+	if sumLimit > 0 {
+		pct = float64(sumRemain) / float64(sumLimit) * 100
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"fetched_at": time.Now().Format("2006-01-02 15:04:05"),
 		"accounts":   out,
+		"summary": map[string]any{
+			"remain":          sumRemain,
+			"limit":           sumLimit,
+			"used":            sumUsed,
+			"checkin_pending": sumCheckin,
+			"remain_pct":      pct,
+			"healthy":         healthy,
+			"total":           len(out),
+		},
 	})
 }
