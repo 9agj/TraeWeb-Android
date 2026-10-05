@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0c10">
+<title>TraeWeb · Trae 账号管家</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <path fill="currentColor" d="M12 2 3 6.5v11L12 22l9-4.5v-11L12 2Zm0 2.3 6.6 3.3L12 10.9 5.4 7.6 12 4.3ZM5 9.4l6 3v7.2l-6-3V9.4Zm8 10.2v-7.2l6-3v7.2l-6 3Z"/>
+    </svg>
+    <span>TraeWeb</span>
+    <em>Trae 账号管家 · Web 版</em>
+  </div>
+  <div class="topbar-actions">
+    <span id="clock" class="clock" title="北京时间"></span>
+    <button id="btnRefreshAll" class="btn ghost" title="刷新全部账号资料与积分">刷新</button>
+    <button id="btnAdd" class="btn ghost">粘贴凭证</button>
+    <button id="btnAddSms" class="btn primary">+ 手机号登录</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── 概览 ── -->
+  <section class="stats">
+    <div class="stat">
+      <div class="stat-label">账号总数</div>
+      <div class="stat-value" id="statAccounts">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">今日已签到</div>
+      <div class="stat-value" id="statToday"><span id="statTodayNum">—</span><small id="statTodayOf"></small></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">剩余积分合计</div>
+      <div class="stat-value accent" id="statCredits">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">服务端时间</div>
+      <div class="stat-value small" id="statServerTime">—</div>
+    </div>
+  </section>
+
+  <!-- ── 账号列表 ── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>账号</h2>
+      <div class="panel-actions">
+        <button id="btnCheckinAll" class="btn primary">一键签到全部</button>
+      </div>
+    </div>
+    <div id="accounts" class="accounts">
+      <div class="empty">正在加载…</div>
+    </div>
+  </section>
+
+  <!-- ── 云端签到（GitHub Actions） ── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>云端签到 <span class="tag">GitHub Actions</span></h2>
+      <div class="panel-actions">
+        <button id="btnGitHub" class="btn ghost">授权 GitHub</button>
+        <button id="btnDeploy" class="btn primary" disabled>一键部署到云端</button>
+      </div>
+    </div>
+    <p class="hint">
+      部署后由 GitHub Actions 每天北京时间 <b>08:00</b> 自动签到，关掉电脑也不中断。
+      仓库中的 <code>.github/workflows/checkin.yml</code> 定时运行 <code>checkin.py</code>，
+      用 <code>X-Cloudide-Session</code> 换取新 JWT 后调签到接口。云端最多 <b id="cloudLimit">4</b> 个账号。
+    </p>
+    <div id="cloudStatus" class="cloud-status">尚未授权 GitHub</div>
+  </section>
+
+  <!-- ── 设置 ── -->
+  <section class="panel">
+    <div class="panel-head"><h2>设置</h2></div>
+    <div class="settings-grid">
+      <label class="field">
+        <span>多账号签到间隔（秒）</span>
+        <input type="number" id="setInterval" min="0" max="60" step="1">
+      </label>
+      <label class="field">
+        <span>飞书机器人 Webhook（选填）</span>
+        <input type="url" id="setFeishu" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...">
+      </label>
+      <div class="field field-action">
+        <span>&nbsp;</span>
+        <button id="btnSaveSettings" class="btn">保存设置</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 运行日志 ── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>运行日志</h2>
+      <div class="panel-actions">
+        <span id="sseDot" class="dot" title="实时连接状态"></span>
+        <button id="btnClearLog" class="btn ghost small">清屏</button>
+      </div>
+    </div>
+    <pre id="logs" class="logs"></pre>
+  </section>
+
+</main>
+
+<!-- ── 添加账号 ── -->
+<dialog id="dlgAdd">
+  <form method="dialog" class="dlg">
+    <h3>添加 Trae 账号</h3>
+
+    <ol class="steps">
+      <li>浏览器新标签打开 <a href="https://www.trae.cn/" target="_blank" rel="noreferrer">www.trae.cn</a> 并完成登录（手机号 + 验证码）。</li>
+      <li>按 <kbd>F12</kbd> 打开开发者工具 → <b>Application</b>（应用）→ 左侧 <b>Cookies</b> → <code>https://www.trae.cn</code>。</li>
+      <li>找到名为 <code>X-Cloudide-Session</code> 的项，复制它的 <b>Value</b>；或切到 <b>Network</b> 面板，点任一 <code>api.trae.cn</code> 请求，整行复制 <code>Cookie</code> 请求头一并粘进来也行。</li>
+    </ol>
+
+    <label class="field">
+      <span>X-Cloudide-Session / Cookie 头 <i>（整行粘贴也可，会自动提取）</i></span>
+      <textarea id="inSession" rows="3" placeholder="粘贴 Session 值，或整行 Cookie…" required></textarea>
+    </label>
+
+    <div class="grid2">
+      <label class="field">
+        <span>备注名（选填）</span>
+        <input type="text" id="inName" placeholder="主号 / 小号">
+      </label>
+      <label class="field">
+        <span>x-device-id（选填）</span>
+        <input type="text" id="inDevice" placeholder="留空则自动生成 16 位设备号" inputmode="numeric">
+      </label>
+    </div>
+
+    <p class="note">
+      凭证仅保存在本机 <code>data/config.json</code>，不会外发。Session 有效期约 14 天，过期后重新登录并再次添加即可。
+    </p>
+
+    <div id="addError" class="error" hidden></div>
+
+    <div class="dlg-actions">
+      <button type="button" id="btnAddCancel" class="btn ghost">取消</button>
+      <button type="submit" id="btnAddSubmit" class="btn primary">验证并添加</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ── 手机号登录 ── -->
+<dialog id="dlgSms">
+  <form method="dialog" class="dlg">
+    <h3>手机号登录</h3>
+
+    <div class="sms-steps">
+      <div class="sms-step">
+        <span class="n">1</span>
+        <div>在浏览器打开 <a href="https://www.trae.cn/" target="_blank" rel="noreferrer">www.trae.cn</a>
+          → 点登录 → 填手机号 → <b>完成滑块</b> → 收到短信验证码<br>
+          <em>先别在你自己的浏览器里提交验证码</em></div>
+      </div>
+      <div class="sms-step">
+        <span class="n">2</span>
+        <div>把收到的验证码填到下面，由本服务完成登录</div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <label class="field">
+        <span>手机号</span>
+        <input type="tel" id="inSmsMobile" placeholder="11 位手机号" inputmode="numeric" maxlength="11">
+      </label>
+      <label class="field">
+        <span>短信验证码</span>
+        <input type="text" id="inSmsCode" placeholder="6 位数字" inputmode="numeric" maxlength="8">
+      </label>
+    </div>
+
+    <label class="field">
+      <span>备注名（选填）</span>
+      <input type="text" id="inSmsName" placeholder="主号 / 小号">
+    </label>
+
+    <p class="note">
+      为什么要绕这一下：Trae 的<b>发码接口有滑块风控</b>（服务端过不去），
+      但<b>登录接口没有</b>。所以由你在浏览器完成滑块拿码、服务端用码换会话（约 14 天有效）。
+      凭证只保存在本机 <code>data/config.json</code>。
+    </p>
+
+    <div id="smsError" class="error" hidden></div>
+
+    <div class="dlg-actions">
+      <button type="button" id="btnSmsCancel" class="btn ghost">取消</button>
+      <button type="submit" id="btnSmsSubmit" class="btn primary">登录并添加</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ── GitHub 授权 ── -->
+<dialog id="dlgGh">
+  <form method="dialog" class="dlg">
+    <h3>授权 GitHub</h3>
+    <p class="note">
+      用于把签到任务部署到你的 GitHub 仓库。需要 <code>repo</code> 与 <code>workflow</code> 权限
+      （classic PAT 勾选 repo + workflow 即可）。
+    </p>
+    <label class="field">
+      <span>Personal Access Token</span>
+      <input type="password" id="inGhToken" placeholder="ghp_… 或 github_pat_…" autocomplete="off">
+    </label>
+    <div id="ghError" class="error" hidden></div>
+    <div class="dlg-actions">
+      <button type="button" id="btnGhCancel" class="btn ghost">取消</button>
+      <button type="submit" id="btnGhSubmit" class="btn primary">验证并保存</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ── 用量 ── -->
+<dialog id="dlgUsage">
+  <div class="dlg wide">
+    <h3 id="usageTitle">用量统计</h3>
+    <div id="usageBody" class="usage-body">加载中…</div>
+    <div class="dlg-actions">
+      <button type="button" id="btnUsageClose" class="btn ghost">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<!-- 内置库（本地资源，无网络依赖） -->
+<script src="lib/nacl.js"></script>
+<script src="lib/sealedbox.js"></script>
+<script src="lib/bridge.js"></script>
+<script src="lib/trae.js"></script>
+<script src="lib/engine.js"></script>
+<script src="lib/github.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

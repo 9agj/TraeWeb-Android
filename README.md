@@ -1,57 +1,59 @@
 # TraeWeb-Android
 
-TraeWeb 的原生 Android 外壳 —— 把跑在 DSHA 容器里的 TraeWeb 服务包成一个可一键启动的 App。
+TraeWeb 的**自包含** Android 版 —— 不依赖任何外部服务器，装完即用。
 
-## 它做什么
+## 与旧版的区别
 
-TraeWeb 本体是一个 Node.js 服务（Trae 多账号签到 / 用量统计 / 云端托管）。本项目只是一个 **WebView 外壳**：
+| | v1.x（空壳） | v2.0（自包含） |
+|---|---|---|
+| 依赖容器跑 Node 服务 | ✅ 必须 | ❌ **不需要** |
+| 需要填服务地址/令牌 | ✅ | ❌ **不需要** |
+| 网络请求 | 浏览器 fetch（受同源限制） | 原生层发出 |
+| 数据存储 | 容器 data/config.json | 本机 SharedPreferences / localStorage |
 
-- 全屏加载 TraeWeb，无浏览器地址栏
-- 记住服务地址，下次直接进
-- 连不上时给出明确提示与「修改地址 / 重试」入口
-
-> ⚠️ **本应用不自带 Node 服务**。服务运行在 DSHA 容器内，需先启动容器并运行 TraeWeb。
-
-## 前置条件
-
-在 DSHA 容器里启动服务：
-
-```bash
-bash /root/traeweb/start.sh
-```
-
-启动后会打印访问地址，形如：
+## 架构
 
 ```
-局域网 : http://192.168.5.3:8790/?token=xxxxxxxx
-本机   : http://127.0.0.1:8790/?token=xxxxxxxx
+WebView (assets/)
+  ├── index.html / app.js / style.css    界面
+  └── lib/
+      ├── nacl.js + sealedbox.js         GitHub Secret 加密（curve25519 sealed box）
+      ├── bridge.js                      Promise 化原生桥
+      ├── trae.js                        Trae API 客户端
+      ├── engine.js                      账号 / 签到 / 存储
+      └── github.js                      Actions 部署
+        ↓ window.TraeNative (@JavascriptInterface)
+  NativeApi.java                         原生 HTTP（绕开同源限制）+ 配置存储
+        ↓
+  api.trae.cn / api.github.com
 ```
+
+## 功能
+
+- **手机号登录**：浏览器取码 + 本机登录接口换会话（绕开发码接口的滑块风控）
+- **粘贴凭证**：直接粘贴 `X-Cloudide-Session`
+- **每日签到**：单账号 / 批量，含 9074 风控自动换设备号重试
+- **用量统计**：近 7 天会话、模型、Token、缓存命中
+- **云端托管**：一键部署到 GitHub Actions，每天 08:00 自动签到
+- **飞书推送**
 
 ## 使用
 
-1. 安装 `TraeWeb.apk`
-2. 首次打开会弹出配置框，粘贴上面的地址（**带上 `?token=` 那一段**）
-3. 保存即可。之后浏览器会记住令牌，可以只填 `http://127.0.0.1:8790/`
-
-因为容器与手机共享网络栈，**手机本机地址 `127.0.0.1:8790` 通常直接可用**。
+1. 安装 APK
+2. 点「+ 手机号登录」，填手机号与验证码；或点「粘贴凭证」
+3. 长按返回键打开工具菜单（刷新 / 清空数据 / 关于）
 
 ## 构建
-
-APK 由 GitHub Actions 自动构建，无需本地 Android SDK：
-
-- 推送到 `main` → 构建并上传 Artifact
-- 打 `v*` tag → 构建并发布 Release
-
-本地构建（若已装 Android SDK + JDK 17 + Gradle 8.7）：
 
 ```bash
 gradle assembleRelease
 # 产物：app/build/outputs/apk/release/app-release.apk
 ```
 
-## 技术说明
+固定签名（`keystore/traeweb.p12`），后续版本可直接覆盖安装。
 
-- 纯 Java，无 Kotlin
-- `minSdk 26`（使用纯矢量 adaptive icon，不含 PNG 资源）
-- `usesCleartextTraffic=true`（TraeWeb 走 HTTP）
-- Release 使用 debug 签名 —— 本项目是个人自用，不发布应用商店
+## 说明
+
+- 纯 Java + 原生 WebView，无第三方依赖
+- `minSdk 26`
+- 走的是 Trae 网页端接口，字段随官方可能变动，代码内已做容错解析

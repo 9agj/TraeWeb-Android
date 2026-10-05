@@ -11,8 +11,8 @@ android {
         // 用 adaptive icon（纯矢量，无 PNG 资源）故最低 API 26；本项目为个人自用，目标机为新版 Android
         minSdk 26
         targetSdk 34
-        versionCode 2
-        versionName "1.1.0"
+        versionCode 3
+        versionName "2.0.0"
     }
 
     // 固定签名：keystore/traeweb.p12 随仓库提交，保证每次构建签名一致，
