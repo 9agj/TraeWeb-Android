@@ -119,7 +119,24 @@ public class RelayService {
             env.put("HOME", base.getAbsolutePath());
             env.put("TMPDIR", ctx.getCacheDir().getAbsolutePath());
 
-            Log.i(TAG, "启动接入服务: " + bin.getAbsolutePath());
+            /*
+             * Go 运行时在 Android 上必须收着点，否则会卡住：
+             *
+             * Android 把 app 放进 `mimd` 内存限制 cgroup，Go 默认按「机器有多少核」
+             * 起 P（逻辑处理器），并预留大块虚拟地址。实测在受限 cgroup 下会出现
+             * 「端口已 LISTEN、但除 1 个 epoll 线程外全部卡在 futex」的假死 ——
+             * TCP 握手都完不成。
+             *
+             * 限制 P 数量 + 收紧 GC 目标，能显著降低启动期的内存预留压力。
+             */
+            int cores = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
+            env.put("GOMAXPROCS", String.valueOf(cores));
+            env.put("GOGC", "50");
+            env.put("GOMEMLIMIT", "64MiB");
+            // 纯 Go 的 DNS 解析器在 Android 上更稳（不依赖 cgo / resolv.conf）
+            env.put("GODEBUG", "netdns=go");
+
+            Log.i(TAG, "启动接入服务: " + bin.getAbsolutePath() + " (GOMAXPROCS=" + cores + ")");
             process = pb.start();
 
             // 必须持续消费 stdout，否则管道写满会阻塞服务端
@@ -139,7 +156,12 @@ public class RelayService {
                     return true;
                 }
             }
-            lastError = "启动超时（30 秒），端口未监听";
+            // 超时后区分两种情况，给出可定位的错误
+            boolean listening = tcpListening();
+            lastError = listening
+                    ? "端口已监听但服务无响应（进程假死）—— 通常是内存受限导致 Go 运行时卡住，"
+                      + "已尝试用 GOMAXPROCS/GOMEMLIMIT 规避；可点「重启接入服务」再试"
+                    : "启动超时（30 秒），端口未监听";
             Log.e(TAG, lastError);
             return false;
         } catch (Throwable t) {
@@ -162,6 +184,27 @@ public class RelayService {
             return false;
         } finally {
             if (c != null) c.disconnect();
+        }
+    }
+
+    /**
+     * 纯 TCP 层探测：只判断端口是否 accept。
+     *
+     * 用来区分「服务没起来」和「服务起了但假死」—— 后者表现为端口 LISTEN
+     * 但连接超时，光靠 HTTP 探测只能看到 false，无法定位。
+     */
+    public boolean tcpListening() {
+        java.net.Socket s = null;
+        try {
+            s = new java.net.Socket();
+            s.connect(new java.net.InetSocketAddress("127.0.0.1", HTTP_PORT), 1200);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            if (s != null) {
+                try { s.close(); } catch (Exception ignored) { }
+            }
         }
     }
 

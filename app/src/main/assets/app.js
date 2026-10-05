@@ -389,8 +389,16 @@ async function renderRelay(opts) {
 
   const running = !!s.running;
   RELAY_LAST_RUNNING = running;
-  tag.textContent = running ? '运行中' : '未运行';
-  tag.className = 'tag ' + (running ? 'ok' : 'warn');
+  const tags = {
+    running:  ['运行中', 'ok'],
+    stuck:    ['假死', 'err'],
+    stopped:  ['未运行', 'warn'],
+    nobinary: ['构建异常', 'err'],
+    error:    ['状态异常', 'err'],
+  };
+  const [label, cls] = tags[s.state] || [(running ? '运行中' : '未运行'), (running ? 'ok' : 'warn')];
+  tag.textContent = label;
+  tag.className = 'tag ' + cls;
 
   // 运行中才拉模型列表；首次或显式刷新时拉
   const wantModels = running && (RELAY_MODELS === null || (opts && opts.refreshModels));
@@ -401,9 +409,13 @@ async function renderRelay(opts) {
   if (!running) RELAY_MODELS = null;
 
   const rows = [];
-  rows.push(row('运行状态', running
-    ? '<span class="ok">监听 127.0.0.1:' + s.port + '</span>'
-    : '<span class="warn">' + esc(s.reason || '未启动') + '</span>'));
+  if (running) {
+    rows.push(row('运行状态', '<span class="ok">监听 127.0.0.1:' + s.port + '</span>'));
+  } else if (s.state === 'stuck') {
+    rows.push(row('运行状态', '<span class="err">端口占用但无响应</span>'));
+  } else {
+    rows.push(row('运行状态', '<span class="warn">' + esc(s.reason || '未启动') + '</span>'));
+  }
   rows.push(row('接入地址', '<code>' + esc(s.baseUrlV1 || '') + '</code>'));
   rows.push(row('API Key', '<code class="relay-key">' + esc(s.apiKey || '') + '</code>'
     + ' <button class="btn tiny ghost" id="btnRelayCopy">复制</button>'));
@@ -428,6 +440,10 @@ async function renderRelay(opts) {
   let footer = '';
   if (running) {
     footer = '<div class="ref-empty" style="margin-top:10px">客户端填上面的接入地址与 Key 即可使用。</div>';
+  } else if (s.state === 'stuck') {
+    footer = '<div class="ref-empty" style="margin-top:10px;color:var(--err)">'
+      + esc(s.reason || '服务假死') + '</div>'
+      + '<div class="relay-actions"><button class="btn small primary" id="btnRelayRestartInline">重启服务</button></div>';
   } else {
     footer = '<div class="relay-actions"><button class="btn small primary" id="btnRelayStart">启动服务</button></div>';
   }
@@ -460,6 +476,15 @@ async function renderRelay(opts) {
     if (r.ok) toast('已同步 ' + r.okCount + ' / ' + r.total + ' 个账号', r.okCount === r.total ? 'ok' : 'err');
     else toast(r.error || '同步失败', 'err');
     renderRelay();
+  });
+
+  const btnRestartInline = $('#btnRelayRestartInline');
+  if (btnRestartInline) btnRestartInline.addEventListener('click', async () => {
+    btnRestartInline.disabled = true;
+    btnRestartInline.textContent = '重启中…';
+    R.restart();
+    await R.waitReady(40000);
+    renderRelay({ refreshModels: true });
   });
 
   const btnStart = $('#btnRelayStart');

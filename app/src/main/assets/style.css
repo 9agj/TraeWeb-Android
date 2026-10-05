@@ -459,6 +459,11 @@ main {
   background: rgba(52, 199, 123, .12);
   border-color: rgba(52, 199, 123, .28);
 }
+.tag.err {
+  color: var(--err);
+  background: rgba(230, 90, 90, .12);
+  border-color: rgba(230, 90, 90, .28);
+}
 .tag.warn {
   color: var(--warn);
   background: rgba(230, 162, 60, .12);

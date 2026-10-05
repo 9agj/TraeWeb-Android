@@ -36,12 +36,20 @@
       o.available = true;
       if (o.binaryPresent === false) {
         o.reason = '内嵌二进制缺失，APK 构建流程有误';
-      } else if (!o.running) {
+        o.state = 'nobinary';
+      } else if (o.running) {
+        o.state = 'running';
+      } else if (o.tcpListening) {
+        // 端口在听但 HTTP 不通 —— 进程假死，与「没启动」是两回事
+        o.state = 'stuck';
+        o.reason = o.error || '端口已监听但服务无响应（进程假死），点「重启服务」再试';
+      } else {
+        o.state = 'stopped';
         o.reason = o.error || '服务未运行';
       }
       return o;
     } catch (e) {
-      return { available: true, running: false, reason: '状态读取失败：' + e.message };
+      return { available: true, running: false, state: 'error', reason: '状态读取失败：' + e.message };
     }
   }
 

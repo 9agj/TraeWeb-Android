@@ -261,8 +261,13 @@ public class NativeApi {
     public String relayStatus() {
         try {
             RelayService r = RelayService.get(ctx);
+            boolean tcp = r.tcpListening();
+            boolean http = r.probe();
             JSONObject o = new JSONObject();
-            o.put("running", r.isRunning() && r.probe());
+            o.put("running", tcp && http);
+            // 端口在听但 HTTP 不通 = 假死，前端单独提示
+            o.put("tcpListening", tcp);
+            o.put("httpOk", http);
             o.put("port", r.port());
             o.put("callbackPort", r.callbackPort());
             o.put("baseUrl", r.baseUrl());
