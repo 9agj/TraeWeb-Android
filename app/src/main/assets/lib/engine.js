@@ -135,20 +135,53 @@
   /** 保证账号持有可用 JWT，必要时静默换新 */
   async function ensureToken(acc) {
     if (tokenAlive(acc)) return { ok: true };
-    if (!acc.session) return { ok: false, reason: '缺少会话，请重新登录' };
-    const r = await T.getToken(acc.session);
-    if (!r.ok) {
+
+    // 路径一：session → JWT（原有方式，最可靠）
+    if (acc.session) {
+      const r = await T.getToken(acc.session);
+      if (r.ok) {
+        updateAccount(acc.id, {
+          token: r.token,
+          tokenUpdatedAt: new Date().toISOString(),
+          accountUid: T.parseAccountUid(r.token) || acc.accountUid || null,
+          tokenAlive: true,
+          lastError: null,
+        });
+        return { ok: true };
+      }
       updateAccount(acc.id, { tokenAlive: false, lastError: r.error });
-      return { ok: false, reason: r.error, expired: r.status === 401 };
+      // 401 说明 session 真废了，不再尝试别的路径
+      if (r.status === 401) {
+        return { ok: false, reason: r.error, expired: true };
+      }
     }
-    updateAccount(acc.id, {
-      token: r.token,
-      tokenUpdatedAt: new Date().toISOString(),
-      accountUid: T.parseAccountUid(r.token) || acc.accountUid || null,
-      tokenAlive: true,
-      lastError: null,
-    });
-    return { ok: true };
+
+    // 路径二：refreshToken 兜底。
+    // 浏览器登录拿到的凭证里，session 若解析失败仍有 refreshToken 可用 ——
+    // 交给接入服务做 ExchangeToken（它会轮换 refreshToken）。
+    if (acc.refreshToken) {
+      const ex = await exchangeRefreshToken(acc.refreshToken, { uid: acc.accountUid || '' });
+      if (ex.ok) {
+        // 交换成功后，接入服务那边已持有新凭证；本地用 session 或旧 token 保守续期
+        const r2 = acc.session ? await T.getToken(acc.session) : { ok: false };
+        if (r2.ok) {
+          updateAccount(acc.id, {
+            token: r2.token,
+            tokenUpdatedAt: new Date().toISOString(),
+            accountUid: T.parseAccountUid(r2.token) || acc.accountUid || null,
+            tokenAlive: true,
+            lastError: null,
+          });
+          return { ok: true };
+        }
+        // 本地换不到也没关系：接入服务已能独立工作
+        log('[凭证] 本地续期失败，但凭证已同步到接入服务，中转可用', 'relay');
+        return { ok: false, reason: '本地令牌已过期，请在签到面板用「浏览器登录」刷新凭证' };
+      }
+      return { ok: false, reason: '凭证已过期且刷新失败：' + ex.error };
+    }
+
+    return { ok: false, reason: '缺少会话与刷新令牌，请重新登录' };
   }
 
   /* ------------------------------------------------------------ 账号 */
@@ -342,23 +375,28 @@
       return { ok: false, error: r.error || '浏览器登录未完成' };
     }
 
-    const p = r.params || {};
-    const userJwt = p.userJwt || p.token || p.accessToken || p.access_token || '';
-    const refreshToken = p.refreshToken || p.refresh_token || '';
-    const uid = p.uid || p.userId || p.user_id || '';
-    const nickname = p.nickname || p.screenName || p.screen_name || '';
+    const parsed = parseAuthCallback(r.params || {});
+    if (!parsed.token) {
+      BL.stop();
+      return { ok: false, error: '回调里没有可用的访问令牌' + (parsed.note ? '（' + parsed.note + '）' : '') };
+    }
 
-    log('已收到授权回调（'
-      + (userJwt ? 'userJwt ' + userJwt.length + ' 字符' : '')
-      + (refreshToken ? (userJwt ? ' + ' : '') + 'refreshToken' : '')
-      + '）', 'login');
+    log('已收到授权回调：'
+      + (parsed.token ? 'Token ' + parsed.token.length + ' 字符' : '')
+      + (parsed.session ? ' + session' : '')
+      + (parsed.refreshToken ? ' + refreshToken' : '')
+      + (parsed.uid ? ' + uid ' + parsed.uid : ''), 'login');
+
+    let token = parsed.token;
+    let finalRefresh = parsed.refreshToken;
+    let session = parsed.session;
+    let uid = parsed.uid;
+    const nickname = parsed.nickname;
 
     // refreshToken → 换新 token。
     // 优先交给接入服务做（它内部走 ExchangeToken 并轮换 refreshToken）；
-    // 失败时退回 userJwt 直接使用。
-    let token = userJwt;
-    let finalRefresh = refreshToken;
-    if (refreshToken) {
+    // 失败时退回已拿到的 Token 直接用。
+    if (finalRefresh) {
       const ex = await exchangeRefreshToken(refreshToken, {
         uid: uid,
         userInfo: p.userInfo || '',
@@ -383,13 +421,16 @@
     const accountUid = uid || T.parseAccountUid(token) || null;
     const dup = findDuplicateByUid(accountUid);
     if (dup) {
-      updateAccount(dup.id, {
+      const patchDup = {
         token: token,
         refreshToken: finalRefresh || dup.refreshToken || null,
         tokenUpdatedAt: new Date().toISOString(),
         tokenAlive: true,
         lastError: null,
-      });
+      };
+      if (session) patchDup.session = session;
+      if (uid) patchDup.accountUid = uid;
+      updateAccount(dup.id, patchDup);
       log('账号已存在，凭证已刷新：' + (dup.name || dup.screenName || accountUid), 'login');
       const rf = await refreshProfile(dup.id);
       await pushToRelay(dup.id, { silent: false });
@@ -400,7 +441,9 @@
     const acc = {
       id: uuid(),
       name: nickname || null,
-      session: null,                       // 浏览器登录拿不到 X-Cloudide-Session，靠 refreshToken 续期
+      // session 从 JWT 的 data.source_id 反推得到（就是 X-Cloudide-Session 的值），
+      // 有了它就能走原有的 session → JWT 续期路径，不必依赖 refreshToken
+      session: session || null,
       refreshToken: finalRefresh || null,
       token: token,
       tokenUpdatedAt: new Date().toISOString(),
@@ -430,6 +473,90 @@
 
     BL.stop();
     return { ok: true, account: findAccount(acc.id), profileSynced: rf.ok };
+  }
+
+  /**
+   * 解析 Trae 授权回调参数。
+   *
+   * 实测回调有两种形态，必须都兼容：
+   *
+   * ① 打包成 JSON 字符串（设备实测走的就是这条）：
+   *      userJwt = '{"ClientID":"...","Token":"eyJ...","UserJwt":"eyJ...",
+   *                  "RefreshToken":"yZf0...","TokenExpireAt":1792...,...}'
+   *    —— 真正的凭证在 JSON 内部，外层那个字符串本身不是 JWT。
+   *    把整串当 token 用会直接失败（这正是上一版「缺少凭证」的原因）。
+   *
+   * ② 平铺的参数：userJwt / token / refreshToken / uid 各自独立。
+   *
+   * JWT payload 里的 data.source_id 就是 X-Cloudide-Session 值，
+   * 所以从 Token 里还能反推出 session —— 有它就能走原有的 session 续期路径。
+   */
+  function parseAuthCallback(params) {
+    const out = { token: '', refreshToken: '', session: '', uid: '', nickname: '', note: '' };
+
+    // 候选原始值：优先 userJwt，其次各种 token 变体
+    const raw = params.userJwt || params.UserJwt || params.token || params.Token
+      || params.accessToken || params.access_token || '';
+
+    let inner = null;
+    let obj = null;
+
+    // 判断是不是「JSON 打包」形态
+    const looksJson = typeof raw === 'string' && raw.trim().startsWith('{');
+    if (looksJson) {
+      try { obj = JSON.parse(raw); } catch (e) { obj = null; }
+    }
+    // 回调参数本身也可能直接是对象（原生侧已解析过）
+    if (!obj && params.data && typeof params.data === 'object') obj = params.data;
+
+    if (obj) {
+      out.token = obj.Token || obj.token || obj.UserJwt || obj.userJwt || obj.AccessToken || '';
+      out.refreshToken = obj.RefreshToken || obj.refreshToken || '';
+      out.uid = obj.UID || obj.uid || obj.UserID || obj.userId || '';
+      inner = obj;
+      if (!out.token) out.note = 'JSON 里没有 Token 字段';
+    } else {
+      out.token = raw;
+      out.refreshToken = params.refreshToken || params.RefreshToken || params.refresh_token || '';
+      out.uid = params.uid || params.UID || params.userId || params.user_id || '';
+    }
+
+    // 外层参数可能也带这些，缺了就用外层的补
+    if (!out.refreshToken) {
+      out.refreshToken = params.refreshToken || params.RefreshToken || params.refresh_token || '';
+    }
+    if (!out.uid) {
+      out.uid = params.uid || params.UID || params.userId || params.user_id || '';
+    }
+    out.nickname = params.nickname || params.screenName || params.screen_name || '';
+    if (inner) {
+      out.nickname = out.nickname || inner.Nickname || inner.nickname || inner.ScreenName || '';
+    }
+
+    // 从 JWT payload 反推 session 与 uid
+    if (out.token && out.token.indexOf('.') > 0) {
+      const payload = T.jwtPayload(out.token);
+      const d = payload && payload.data;
+      if (d) {
+        if (d.source_id && !out.session) out.session = d.source_id;
+        if (d.id && !out.uid) out.uid = String(d.id);
+      }
+      if (!out.session && d && typeof d.session === 'string') out.session = d.session;
+    }
+
+    // 兜底：外层直接给了 session
+    if (!out.session) {
+      out.session = params.session || params['X-Cloudide-Session'] || params.source_id || '';
+    }
+
+    // 有效性检查：token 必须是三段点分的 JWT，否则不算拿到凭证
+    if (out.token && out.token.split('.').length !== 3) {
+      const t = String(out.token);
+      out.note = 'Token 不是 JWT 格式（' + t.slice(0, 24) + '…）';
+      out.token = '';
+    }
+
+    return out;
   }
 
   /**
@@ -607,6 +734,7 @@
   }
 
   window.Engine = {
+    parseAuthCallback: parseAuthCallback,
     CLOUD_ACCOUNT_LIMIT: CLOUD_ACCOUNT_LIMIT,
     setLogSink: (fn) => { logSink = fn; },
     log: log,
