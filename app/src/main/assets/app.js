@@ -364,6 +364,92 @@ async function doDeploy() {
   loadState();
 }
 
+/* ───────────────────────── 开发参考 ───────────────────────── */
+
+let REF_TAB = 'models';
+let KEY_LIST = [];
+
+function renderRef() {
+  const box = $('#refBody');
+  const R = window.RefData;
+  if (!R) { box.innerHTML = '<div class="ref-empty">数据未加载</div>'; return; }
+  $('#refTag').textContent = { models: '模型', endpoints: '端点', keys: '密钥' }[REF_TAB];
+
+  if (REF_TAB === 'models') {
+    const rows = R.MODELS.map((m) =>
+      '<tr><td class="k">' + esc(m.name) + '</td>' +
+      '<td class="mid">' + esc(m.id) + '</td>' +
+      '<td>' + esc(m.vendor) + '</td>' +
+      '<td style="color:var(--muted)">' + esc(m.note) + '</td></tr>').join('');
+    box.innerHTML =
+      '<div class="note-line">⚠️ Trae <b>未开放模型 API</b>。下面这份清单来自官网定价页的产品数据，' +
+      '仅用于了解当前有哪些模型可选，<b>不能用于第三方调用</b>。</div>' +
+      '<table><thead><tr><th>模型</th><th>标识</th><th>厂商</th><th>备注</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return;
+  }
+
+  if (REF_TAB === 'endpoints') {
+    let html = '<div class="note-line">这些端点来自官网前端 JS，' +
+      '<b>仅供开发参考 / 抓包对照</b>。多数需要 <code>Authorization: Cloud-IDE-JWT</code> 与设备号。' +
+      '统一前缀 <code>' + esc(R.API_HOST) + '</code></div>';
+    R.ENDPOINTS.forEach((g) => {
+      const rows = g.items.map((it) =>
+        '<tr><td class="mid" style="width:56px">' + esc(it[0]) + '</td>' +
+        '<td><code>' + esc(it[1]) + '</code></td>' +
+        '<td style="color:var(--muted)">' + esc(it[2]) + '</td></tr>').join('');
+      html += '<div class="ref-group"><h4>' + esc(g.group) + '</h4>' +
+        '<table><tbody>' + rows + '</tbody></table></div>';
+    });
+    box.innerHTML = html;
+    return;
+  }
+
+  // keys
+  const R2 = window.RefData;
+  const rows = KEY_LIST.length
+    ? '<div class="key-list">' + KEY_LIST.map((k, i) =>
+        '<div class="key-row"><span class="idx">' + (i + 1) + '</span><code>' + esc(k) + '</code></div>').join('') + '</div>'
+    : '<div class="ref-empty">尚未生成，点上方「生成」</div>';
+  box.innerHTML =
+    '<div class="note-line">⚠️ <b>这不是 Trae 的 API Key</b>（Trae 没有这种机制）。' +
+    '这是一个纯本地的强随机串生成器，可用于自建服务、面板口令等任何需要随机密钥的地方。' +
+    '随机源：<code>crypto.getRandomValues</code>（拒绝采样，无取模偏置）。</div>' +
+    '<div class="ref-tools">' +
+      '<label>条数 <input type="number" id="kCount" value="5" min="1" max="200"></label>' +
+      '<label>长度 <input type="number" id="kLen" value="32" min="4" max="128"></label>' +
+      '<label>字符集 <select id="kCharset">' +
+        R2.CHARSETS.map((c) => '<option value="' + c + '">' + c + '</option>').join('') +
+      '</select></label>' +
+      '<button class="btn small primary" id="btnGenKeys">生成</button>' +
+      '<button class="btn small ghost" id="btnCopyKeys">复制全部</button>' +
+      '<button class="btn small ghost" id="btnClearKeys">清空</button>' +
+    '</div>' + rows;
+
+  $('#btnGenKeys').addEventListener('click', () => {
+    const r = R2.generateKeys(
+      Number($('#kCount').value),
+      Number($('#kLen').value),
+      $('#kCharset').value
+    );
+    KEY_LIST = r.keys;
+    renderRef();
+    toast('已生成 ' + KEY_LIST.length + ' 条' + (r.strong ? '（强随机）' : '（弱随机）'), 'ok');
+  });
+  $('#btnCopyKeys').addEventListener('click', () => {
+    if (!KEY_LIST.length) { toast('还没有生成', 'err'); return; }
+    const text = KEY_LIST.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => toast('已复制 ' + KEY_LIST.length + ' 条到剪贴板', 'ok'),
+        () => toast('复制失败', 'err')
+      );
+    } else {
+      toast('当前环境不支持剪贴板', 'err');
+    }
+  });
+  $('#btnClearKeys').addEventListener('click', () => { KEY_LIST = []; renderRef(); });
+}
+
 /* ───────────────────────── 设置 ───────────────────────── */
 
 function renderSettings() {
@@ -485,6 +571,17 @@ function boot() {
   $('#btnDeploy').addEventListener('click', doDeploy);
   $('#btnSaveSettings').addEventListener('click', saveSettings);
   $('#btnClearLog').addEventListener('click', () => { $('#logs').innerHTML = ''; });
+
+  // 开发参考：标签切换
+  document.querySelectorAll('.reftab').forEach((b) => {
+    b.addEventListener('click', () => {
+      REF_TAB = b.dataset.tab;
+      document.querySelectorAll('.reftab').forEach((x) => x.classList.toggle('primary', x === b));
+      renderRef();
+    });
+  });
+  document.querySelector('.reftab[data-tab="models"]').classList.add('primary');
+  renderRef();
 
   tickClock();
   setInterval(tickClock, 1000);

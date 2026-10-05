@@ -80,6 +80,19 @@
     <div id="cloudStatus" class="cloud-status">尚未授权 GitHub</div>
   </section>
 
+  <!-- ── 开发参考 ── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>开发参考 <span class="tag" id="refTag">模型</span></h2>
+      <div class="panel-actions">
+        <button class="btn small ghost reftab" data-tab="models">可用模型</button>
+        <button class="btn small ghost reftab" data-tab="endpoints">接口端点</button>
+        <button class="btn small ghost reftab" data-tab="keys">密钥生成</button>
+      </div>
+    </div>
+    <div id="refBody" class="ref-body"></div>
+  </section>
+
   <!-- ── 设置 ── -->
   <section class="panel">
     <div class="panel-head"><h2>设置</h2></div>
@@ -242,6 +255,7 @@
 <script src="lib/trae.js"></script>
 <script src="lib/engine.js"></script>
 <script src="lib/github.js"></script>
+<script src="lib/refdata.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
