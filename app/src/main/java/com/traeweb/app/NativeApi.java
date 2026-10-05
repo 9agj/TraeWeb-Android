@@ -41,7 +41,12 @@ public class NativeApi {
     private final Context ctx;
     private final SharedPreferences store;
     private final ExecutorService pool = Executors.newCachedThreadPool();
-    /** taskId -> 响应 JSON；值为 null 表示仍在进行中 */
+    /**
+     * taskId -> 响应 JSON。
+     * 约定：空串 "" 表示仍在进行中，非空字符串表示已完成。
+     * 注意不能用 null 表示进行中 —— ConcurrentHashMap 不允许 null value，会抛 NPE。
+     */
+    private static final String PENDING = "";
     private final Map<String, String> tasks = new ConcurrentHashMap<>();
 
     public NativeApi(Context ctx) {
@@ -59,32 +64,50 @@ public class NativeApi {
     @JavascriptInterface
     public String httpStart(String url, String method, String headersJson, String body) {
         final String id = UUID.randomUUID().toString();
-        tasks.put(id, null);
-        pool.execute(() -> {
-            String result;
-            try {
-                result = doHttp(url, method, headersJson, body);
-            } catch (Throwable t) {
-                result = errorJson("网络异常：" + t.getClass().getSimpleName() + " " + safe(t.getMessage()));
-            }
-            tasks.put(id, result);
-        });
+        tasks.put(id, PENDING);
+        try {
+            pool.execute(() -> {
+                String result;
+                try {
+                    result = doHttp(url, method, headersJson, body);
+                } catch (Throwable t) {
+                    result = errorJson("网络异常：" + t.getClass().getSimpleName() + " " + safe(t.getMessage()));
+                }
+                tasks.put(id, result);
+            });
+        } catch (Throwable t) {
+            // 线程池已关闭等极端情况：直接落成已完成态，避免异常穿透到 JS
+            tasks.put(id, errorJson("任务提交失败：" + safe(t.getMessage())));
+        }
         return id;
     }
 
-    /** 轮询结果。返回空串表示仍在进行；返回 JSON 字符串表示完成（并从表中移除）。 */
+    /**
+     * 轮询结果。
+     * 返回空串 = 仍在进行；返回非空 JSON = 已完成（同时从表中移除）。
+     * 任何异常都在此收敛，绝不抛给 JS —— @JavascriptInterface 一抛异常，前端只会收到
+     * 一句无信息量的 "Java exception was raised during method invocation"。
+     */
     @JavascriptInterface
     public String httpPoll(String id) {
-        String v = tasks.get(id);
-        if (v == null) return "";
-        tasks.remove(id);
-        return v;
+        try {
+            if (id == null) return PENDING;
+            final String v = tasks.get(id);
+            if (v == null) return PENDING;      // 未知 id：视为未完成，由前端超时兜底
+            if (PENDING.equals(v)) return PENDING;
+            tasks.remove(id);
+            return v;
+        } catch (Throwable t) {
+            return errorJson("轮询异常：" + safe(t.getMessage()));
+        }
     }
 
     /** 取消/丢弃任务。 */
     @JavascriptInterface
     public void httpAbort(String id) {
-        tasks.remove(id);
+        try {
+            tasks.remove(id);
+        } catch (Throwable ignored) { }
     }
 
     private String doHttp(String url, String method, String headersJson, String body) {
@@ -191,30 +214,44 @@ public class NativeApi {
 
     @JavascriptInterface
     public String storeGet(String key) {
-        return store.getString(key, "");
+        try {
+            return store.getString(key, "");
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     @JavascriptInterface
     public void storeSet(String key, String value) {
-        store.edit().putString(key, value == null ? "" : value).apply();
+        try {
+            store.edit().putString(key, value == null ? "" : value).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "storeSet 失败: " + safe(t.getMessage()));
+        }
     }
 
     @JavascriptInterface
     public void storeRemove(String key) {
-        store.edit().remove(key).apply();
+        try {
+            store.edit().remove(key).apply();
+        } catch (Throwable ignored) { }
     }
 
     /* ------------------------------------------------------------ 杂项 */
 
     @JavascriptInterface
     public void toast(String msg) {
-        new Handler(Looper.getMainLooper()).post(
-                () -> Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show());
+        try {
+            new Handler(Looper.getMainLooper()).post(
+                    () -> Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show());
+        } catch (Throwable ignored) { }
     }
 
     @JavascriptInterface
     public void log(String msg) {
-        Log.i(TAG, msg);
+        try {
+            Log.i(TAG, msg);
+        } catch (Throwable ignored) { }
     }
 
     /** 供 Java 侧读取（例如把服务地址注入页面） */
