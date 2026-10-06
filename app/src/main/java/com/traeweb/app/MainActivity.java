@@ -110,7 +110,20 @@ public class MainActivity extends Activity {
 
         // 内嵌接入服务：后台拉起 Go 服务，不阻塞界面。
         // 二进制缺失（构建异常）时静默失败，前端「接入地址」面板会显示具体状态。
-        new Thread(() -> RelayService.get(this).start(), "relay-boot").start();
+        //
+        // 重试 3 次：启动偶发卡死（端口已监听但进程无响应）不是稳定复现的问题，
+        // 每次失败后 start() 会杀掉残留进程释放端口，所以重试是安全的。
+        new Thread(() -> {
+            RelayService svc = RelayService.get(this);
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                if (svc.start()) return;
+                Log.w("TraeWeb", "接入服务启动失败（第 " + attempt + " 次）：" + svc.lastError());
+                if (attempt < 3) {
+                    try { Thread.sleep(1500L * attempt); } catch (InterruptedException e) { return; }
+                }
+            }
+            Log.e("TraeWeb", "接入服务三次启动均失败：" + svc.lastError());
+        }, "relay-boot").start();
     }
 
     /* ------------------------------------------------------------ 生命周期 */

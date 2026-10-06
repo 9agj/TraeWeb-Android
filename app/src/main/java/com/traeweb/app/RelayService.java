@@ -209,32 +209,52 @@ public class RelayService {
             }
 
             /*
-             * Go 运行时在 Android 上必须收着点，否则会卡住：
+             * 这里曾经设过 GOMEMLIMIT=64MiB + GOGC=50，理由是「受限 cgroup 下
+             * Go 运行时卡死」。后来发现那个诊断是错的（真正原因是 DNS 解析失败），
+             * 而这两个限制本身有害：
              *
-             * Android 把 app 放进 `mimd` 内存限制 cgroup，Go 默认按「机器有多少核」
-             * 起 P（逻辑处理器），并预留大块虚拟地址。实测在受限 cgroup 下会出现
-             * 「端口已 LISTEN、但除 1 个 epoll 线程外全部卡在 futex」的假死 ——
-             * TCP 握手都完不成。
+             *   - 64MiB 的软上限对流式响应来说太小 —— 长回答的缓冲会顶到上限，
+             *     触发持续 GC；
+             *   - 设备实测有 15GB 内存、4GB 可用，内存根本不是瓶颈。
              *
-             * 限制 P 数量 + 收紧 GC 目标，能显著降低启动期的内存预留压力。
+             * 只保留 GOMAXPROCS：限制 P 数量无害，且能减少启动期的线程开销。
              */
             int cores = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
             env.put("GOMAXPROCS", String.valueOf(cores));
-            env.put("GOGC", "50");
-            env.put("GOMEMLIMIT", "64MiB");
-            // 纯 Go 的 DNS 解析器在 Android 上更稳（不依赖 cgo / resolv.conf）
-            env.put("GODEBUG", "netdns=go");
 
             Log.i(TAG, "启动接入服务: " + bin.getAbsolutePath() + " (GOMAXPROCS=" + cores + ")");
             process = pb.start();
 
-            // 必须持续消费 stdout，否则管道写满会阻塞服务端
+            // 必须持续消费 stdout，否则管道写满会阻塞服务端。
+            // 同时落一份到 relay/data/relay.log：logcat 环形缓冲很小，
+            // 出问题回头看往往已经被冲掉了，而这份是持久的。
             final Process p = process;
+            final File logFile = new File(dataDir, "relay.log");
             new Thread(() -> {
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                java.io.Writer w = null;
+                try {
+                    // 超过 256KB 就截断重来，避免无限增长
+                    if (logFile.exists() && logFile.length() > 256 * 1024) {
+                        //noinspection ResultOfMethodCallIgnored
+                        logFile.delete();
+                    }
+                    w = new java.io.OutputStreamWriter(
+                            new java.io.FileOutputStream(logFile, true), "UTF-8");
+                    w.write("\n===== relay 启动 " + new java.util.Date() + " =====\n");
+                    w.flush();
+                    BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
                     String line;
-                    while ((line = r.readLine()) != null) Log.i(TAG, "[relay] " + line);
-                } catch (Exception ignored) { }
+                    while ((line = r.readLine()) != null) {
+                        Log.i(TAG, "[relay] " + line);
+                        try {
+                            w.write(line + "\n");
+                            w.flush();
+                        } catch (Exception ignored) { }
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    try { if (w != null) w.close(); } catch (Exception ignored) { }
+                }
             }, "relay-log").start();
 
             for (int i = 0; i < 60; i++) {
@@ -245,13 +265,15 @@ public class RelayService {
                     return true;
                 }
             }
-            // 超时后区分两种情况，给出可定位的错误
+            // 超时后区分两种情况，给出可定位的错误。
             boolean listening = tcpListening();
             lastError = listening
-                    ? "端口已监听但服务无响应（进程假死）—— 通常是内存受限导致 Go 运行时卡住，"
-                      + "已尝试用 GOMAXPROCS/GOMEMLIMIT 规避；可点「重启接入服务」再试"
+                    ? "端口已监听但服务无响应（进程假死）"
                     : "启动超时（30 秒），端口未监听";
             Log.e(TAG, lastError);
+            // 关键：把卡死的进程杀掉，否则它会一直占着端口，
+            // 后续每次重启都绑不上，问题永远自愈不了。
+            stop();
             return false;
         } catch (Throwable t) {
             lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
