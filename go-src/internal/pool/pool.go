@@ -134,18 +134,46 @@ func New(stateFp string) *Pool {
 // 若无条件清除，重启就会把禁用状态刷掉 —— 账号被反复重试又反复失败。
 // 而 token 真的变了说明用户重新登录过，那正是禁用想要表达的「需要重登」已满足。
 func (e *entry) applyAuthLocked(a *auth.Auth) {
-	// 凭证换过（指纹不同）→ 用户重新登录了，解除硬禁用。
-	// 指纹为空表示旧文件没记录过，此时不解除（保守），
-	// 由 Disable() 在下次禁用时补上。
-	fp := tokenFP(a.AccessToken)
-	if e.disabled && fp != "" && e.disabledFP != "" && fp != e.disabledFP {
-		e.disabled = false
-		e.reason = ""
-		e.until = time.Time{}
-		e.errCount = 0
-		e.disabledFP = ""
+	if e.disabled {
+		fp := tokenFP(a.AccessToken)
+		switch {
+		case fp == "":
+			// 凭证里没有 token，无从判断，保持禁用
+		case e.disabledFP == "":
+			// 旧版本留下的禁用记录 —— 那时还没有指纹字段，无法判断
+			// 凭证是否换过。一律先解除：如果确实失效，下一次真实请求
+			// 会重新禁用（并补上指纹），代价只有一次失败请求；
+			// 而如果不解除，被误禁用的账号就永远回不来。
+			e.clearDisableLocked()
+		case fp != e.disabledFP:
+			// 凭证确实换过 → 用户重新登录了
+			e.clearDisableLocked()
+		}
 	}
 	e.a = a
+}
+
+// clearDisableLocked 解除硬禁用并清掉相关状态。调用方须持有 p.mu。
+func (e *entry) clearDisableLocked() {
+	e.disabled = false
+	e.reason = ""
+	e.until = time.Time{}
+	e.errCount = 0
+	e.disabledFP = ""
+}
+
+// Reenable 手动解除硬禁用（供控制台使用）。
+// 返回 false 表示账号不存在。
+func (p *Pool) Reenable(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.clearDisableLocked()
+	p.saveLocked()
+	return true
 }
 
 func (p *Pool) Add(a *auth.Auth) {

@@ -452,8 +452,10 @@ function acctList(list, compact) {
       + (compact ? '' :
           '<div class="acts">'
           + '<button class="btn sm" onclick="refreshAcct(\'' + esc(a.uid) + '\')">刷新</button>'
-          + '<button class="btn sm" onclick="toggleAcct(\'' + esc(a.uid) + '\',' + (a.enabled === false) + ')">'
-          +   (a.enabled === false ? '启用' : '停用') + '</button>'
+          + (a.disabled
+              ? '<button class="btn sm pri" onclick="reenableAcct(\'' + esc(a.uid) + '\')">重新启用</button>'
+              : '<button class="btn sm" onclick="toggleAcct(\'' + esc(a.uid) + '\',' + (a.enabled === false) + ')">'
+                + (a.enabled === false ? '启用' : '停用') + '</button>')
           + '<button class="btn sm" onclick="showJSON(\'' + esc(a.uid) + '\')">详情</button>'
           + '<button class="btn sm dan" onclick="deleteAcct(\'' + esc(a.uid) + '\')">删除</button>'
           + '</div>')
@@ -651,6 +653,19 @@ async function refreshAcct(uid) {
     toast('已刷新');
     await loadAccounts();
   } catch (e) { toast('刷新失败：' + e.message, 'bad'); }
+}
+
+async function reenableAcct(uid) {
+  try {
+    // 硬禁用（session 失效）与软开关是两套状态，这里一次性都放开
+    await api('/admin/api/accounts/' + encodeURIComponent(uid), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true })
+    });
+    toast('已重新启用');
+    loadAccounts();
+  } catch (e) { toast('操作失败：' + e.message, 'bad'); }
 }
 
 async function toggleAcct(uid, enable) {

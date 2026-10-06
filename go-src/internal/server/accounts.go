@@ -269,6 +269,11 @@ func (h *Handler) adminPatchAccount(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusNotFound, "not_found", "account vanished")
 			return
 		}
+		// 用户点「启用」时一并解除硬禁用（session 失效造成的那种）。
+		// 否则软开关和硬禁用是两套状态，界面上点了启用却依然不可用。
+		if *req.Enabled {
+			h.cfg.Pool.Reenable(uid)
+		}
 	}
 	_ = st // nickname 更新需要改 auth 文件
 	if req.Nickname != nil && *req.Nickname != "" {
