@@ -108,6 +108,44 @@ public class RelayService {
         return k;
     }
 
+
+    /**
+     * 读取系统 DNS 服务器地址，供 Go 进程使用。
+     *
+     * 为什么必须由 Java 侧提供：Android 用 netd 统一管理 DNS，没有
+     * /etc/resolv.conf。Go 的纯解析器只会读那个文件，读不到就退回
+     * [::1]:53 然后连接被拒 —— 表现为上游全部无法访问（余额 0、503）。
+     * 而 Java 的 ConnectivityManager 能正常拿到系统 DNS。
+     *
+     * @return 逗号分隔的 IP 列表；读不到时返回空串（Go 侧有兜底 DNS）
+     */
+    private String dnsServers() {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
+                    ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return "";
+            android.net.Network n = cm.getActiveNetwork();
+            if (n == null) return "";
+            android.net.LinkProperties lp = cm.getLinkProperties(n);
+            if (lp == null) return "";
+            StringBuilder sb = new StringBuilder();
+            for (java.net.InetAddress a : lp.getDnsServers()) {
+                if (a == null) continue;
+                String h = a.getHostAddress();
+                if (h == null || h.isEmpty()) continue;
+                // 去掉 IPv6 的 scope id（如 fe80::1%wlan0），Go 侧用不了
+                int pct = h.indexOf('%');
+                if (pct > 0) h = h.substring(0, pct);
+                if (sb.length() > 0) sb.append(',');
+                sb.append(h);
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            Log.w(TAG, "读取 DNS 失败: " + safe(t.getMessage()));
+            return "";
+        }
+    }
+
     /** 二进制是否存在（构建时 CI 编译产出；缺失说明构建流程有问题） */
     public boolean binaryPresent() {
         return binaryFile().exists();
@@ -158,6 +196,16 @@ public class RelayService {
             env.put("TW2A_STATE_FILE", new File(dataDir, "state.json").getAbsolutePath());
             env.put("HOME", base.getAbsolutePath());
             env.put("TMPDIR", ctx.getCacheDir().getAbsolutePath());
+
+            // Android 没有 /etc/resolv.conf，必须把系统 DNS 显式传给 Go，
+            // 否则 Go 会退回 [::1]:53 并解析失败（上游全部不可达）。
+            String dns = dnsServers();
+            if (!dns.isEmpty()) {
+                env.put("TW2A_DNS", dns);
+                Log.i(TAG, "使用系统 DNS: " + dns);
+            } else {
+                Log.w(TAG, "未读到系统 DNS，Go 侧将使用兜底 DNS");
+            }
 
             /*
              * Go 运行时在 Android 上必须收着点，否则会卡住：

@@ -113,6 +113,9 @@ func New() *Client {
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second, // 首字节兜底（长推理预留），不限制整流时长
+		// Android 没有 /etc/resolv.conf，Go 的默认解析器会退回到 [::1]:53 并失败。
+		// 这里挂上自定义 Dialer，用 App 通过 TW2A_DNS 传进来的系统 DNS。详见 dns.go。
+		DialContext: newDialer().DialContext,
 	}
 	return &Client{
 		HTTP:       &http.Client{Timeout: 120 * time.Second, Transport: tr},
