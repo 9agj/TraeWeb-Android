@@ -141,7 +141,8 @@ public class RelayService {
             }
             return sb.toString();
         } catch (Throwable t) {
-            Log.w(TAG, "读取 DNS 失败: " + safe(t.getMessage()));
+            String m = t.getMessage();
+            Log.w(TAG, "读取 DNS 失败: " + (m == null ? t.getClass().getSimpleName() : m));
             return "";
         }
     }
