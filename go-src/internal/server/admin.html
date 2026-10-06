@@ -204,8 +204,6 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
     <div class="group">账号</div>
     <div class="item" data-view="accounts" onclick="go('accounts',this)">
       <span class="ic">◉</span>账号管理<span class="cnt" id="cntAcct">0</span></div>
-    <div class="item" data-view="add" onclick="go('add',this)">
-      <span class="ic">＋</span>添加账号</div>
     <div class="item" data-view="balance" onclick="go('balance',this)">
       <span class="ic">◐</span>Token 余额</div>
     <div class="item" data-view="credits" onclick="go('credits',this)">
@@ -336,7 +334,6 @@ function render() {
   const m = $('main');
   if (VIEW === 'overview') return viewOverview(m);
   if (VIEW === 'accounts') return viewAccounts(m);
-  if (VIEW === 'add') return viewAdd(m);
   if (VIEW === 'balance') return viewBalance(m);
   if (VIEW === 'credits') return viewCredits(m);
   if (VIEW === 'key') return viewKey(m);
@@ -376,12 +373,14 @@ function viewOverview(m) {
         + '点击左侧「账号管理」可刷新。</div>' : '')
     + (cooling > 0 ? '<div class="note warn">' + cooling + ' 个账号处于冷却中（上游限流）。</div>' : '')
     + '<div class="card"><h3>快捷操作</h3><div class="row">'
-    +   '<button class="btn pri" onclick="go(\'add\')">添加账号</button>'
-    +   '<button class="btn" onclick="loadCredits();go(\'credits\')">刷新额度</button>'
+    +   '<button class="btn pri" onclick="loadCredits()">刷新余额</button>'
+    +   '<button class="btn" onclick="go(\'accounts\')">账号管理</button>'
     +   '<button class="btn" onclick="go(\'key\')">查看访问密钥</button>'
     + '</div></div>'
     + '<div class="card"><h3>账号摘要</h3>'
-    + (total === 0 ? '<div class="empty">还没有账号，先去「添加账号」</div>' : acctList(ACCOUNTS, true))
+    + (total === 0
+        ? '<div class="empty">还没有账号。<br>请在 App 里点「添加账号」完成登录，凭证会自动同步到这里。</div>'
+        : acctList(ACCOUNTS, true))
     + '</div>';
 
   if (CREDITS.length === 0 && total > 0) loadCredits();
@@ -398,7 +397,7 @@ function viewAccounts(m) {
     + '<div class="sub">共 ' + ACCOUNTS.length + ' 个账号 · 点「登录」刷新即将过期的凭证</div>'
     + (ACCOUNTS.length === 0
         ? '<div class="card"><div class="empty">还没有账号<br><br>'
-          + '<button class="btn pri" onclick="go(\'add\')">添加第一个账号</button></div></div>'
+          + '请在 App 里点「添加账号」完成登录，凭证会自动同步到这里。</div></div>'
         : '<div class="card" style="padding:0">' + acctList(ACCOUNTS, false) + '</div>');
 }
 
@@ -410,10 +409,18 @@ function acctList(list, compact) {
   return list.map((a) => {
     const initial = esc((a.nickname || a.uid || '?').trim().charAt(0).toUpperCase() || '?');
     const bs = [];
-    if (a.enabled === false) bs.push(badge('已停用', 'mut'));
+    // disabled 优先：这是 session 失效导致的硬禁用，账号已完全不可用。
+    // 之前只判断 enabled，硬禁用的账号照样显示绿色「启用」，严重误导。
+    if (a.disabled) bs.push(badge('已禁用', 'bad'));
+    else if (a.enabled === false) bs.push(badge('已停用', 'mut'));
     else bs.push(badge('启用', 'ok'));
     if (a.expiredSoon) bs.push(badge('即将过期', 'warn'));
-    if (a.cooling) bs.push(badge('冷却中', 'bad'));
+    if (a.cooling) {
+      const l = a.cool_kind === 'soft_rate' ? '限流冷却'
+        : a.cool_kind === 'plan_limit' ? '权益不足'
+        : a.cool_kind === 'error_threshold' ? '错误冷却' : '冷却中';
+      bs.push(badge(l, 'warn'));
+    }
     if (a.hasAuth === false) bs.push(badge('缺少凭证', 'bad'));
 
     const meta = [];
@@ -454,35 +461,6 @@ function acctList(list, compact) {
   }).join('');
 }
 
-/* ── 添加账号 ── */
-function viewAdd(m) {
-  m.innerHTML =
-    '<h2>添加账号</h2>'
-    + '<div class="sub">两种方式：浏览器授权（推荐）或粘贴凭证</div>'
-
-    + '<div class="card"><h3>方式一 · 浏览器授权登录</h3>'
-    +   '<div class="note">点下方按钮会跳系统浏览器。在里面用手机号登录 Trae，'
-    +   '完成后自动回到本页，无需手工复制任何东西。</div>'
-    +   '<div class="row"><button class="btn pri" id="btnLogin" onclick="startLogin()">'
-    +   '打开浏览器登录</button><span id="loginMsg" style="color:var(--dim);font-size:12.5px"></span></div>'
-    + '</div>'
-
-    + '<div class="card"><h3>方式二 · 导入凭证</h3>'
-    +   '<div class="field"><label>回调链接或凭证 JSON'
-    +   '<span class="hint">从浏览器地址栏复制，或粘贴 {"auth":{...}}</span></label>'
-    +   '<textarea id="impText" placeholder=\'http://127.0.0.1:18080/authorize?refreshToken=...\'></textarea></div>'
-    +   '<div class="row"><button class="btn pri" onclick="importCred()">导入</button>'
-    +   '<button class="btn" onclick="$(\'impText\').value=\'\'">清空</button></div>'
-    + '</div>'
-
-    + '<div class="card"><h3>方式三 · 手填必要字段</h3>'
-    +   '<div class="field"><label>Access Token（Cloud-IDE-JWT）</label>'
-    +   '<textarea id="impToken" placeholder="eyJhbGciOi..."></textarea></div>'
-    +   '<div class="field"><label>Refresh Token<span class="hint">可选，有则能自动续期</span></label>'
-    +   '<input type="text" id="impRefresh" placeholder="yt..."></div>'
-    +   '<div class="row"><button class="btn" onclick="importManual()">导入</button></div>'
-    + '</div>';
-}
 
 /* ── Token 余额 ── */
 function viewBalance(m) {
@@ -712,96 +690,6 @@ async function showJSON(uid) {
 }
 
 function closeModal() { $('mask').classList.remove('on'); }
-
-async function importCred() {
-  const v = $('impText').value.trim();
-  if (!v) { toast('请先粘贴内容', 'warn'); return; }
-  try {
-    const body = v.startsWith('{')
-      ? { json: v }
-      : { callback_url: v };
-    const d = await api('/admin/api/accounts/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    toast('导入成功：' + (d.action === 'updated' ? '已更新' : '已创建'));
-    $('impText').value = '';
-    await loadAccounts();
-    go('accounts');
-  } catch (e) { toast('导入失败：' + e.message, 'bad'); }
-}
-
-async function importManual() {
-  const token = $('impToken').value.trim();
-  const refresh = $('impRefresh').value.trim();
-  if (!token) { toast('请填写 Access Token', 'warn'); return; }
-  if (token.split('.').length !== 3) { toast('Access Token 不是 JWT 格式', 'bad'); return; }
-  const doc = {
-    auth: {
-      accessToken: token,
-      refreshToken: refresh,
-      domain: 'trae.cn',
-      apiHost: 'https://api.trae.com.cn'
-    },
-    account: {}
-  };
-  try {
-    const d = await api('/admin/api/accounts/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ json: JSON.stringify(doc) })
-    });
-    toast('导入成功');
-    $('impToken').value = ''; $('impRefresh').value = '';
-    await loadAccounts();
-    go('accounts');
-  } catch (e) { toast('导入失败：' + e.message, 'bad'); }
-}
-
-let LOGIN_POLL = null;
-
-async function startLogin() {
-  const btn = $('btnLogin'), msg = $('loginMsg');
-  btn.disabled = true; btn.textContent = '等待授权…';
-  msg.innerHTML = '<span class="spin"></span>已打开浏览器，请在其中完成登录';
-  try {
-    const d = await api('/admin/api/login', { method: 'POST' });
-    // 服务端返回授权链接；在新窗口打开（本机回调端口已在服务端监听）
-    if (d && d.url) {
-      window.open(d.url, '_blank');
-    }
-  } catch (e) {
-    btn.disabled = false; btn.textContent = '打开浏览器登录';
-    msg.textContent = '';
-    toast('发起失败：' + e.message, 'bad');
-    return;
-  }
-  if (LOGIN_POLL) clearInterval(LOGIN_POLL);
-  let n = 0;
-  LOGIN_POLL = setInterval(async () => {
-    n++;
-    try {
-      const r = await api('/admin/api/login/result');
-      if (r && r.ok) {
-        clearInterval(LOGIN_POLL); LOGIN_POLL = null;
-        btn.disabled = false; btn.textContent = '打开浏览器登录';
-        msg.textContent = '';
-        toast('登录成功');
-        await loadAccounts();
-        go('accounts');
-        return;
-      }
-      if (r && r.error) { msg.textContent = r.error; }
-    } catch (e) { /* 继续轮询 */ }
-    if (n > 100) {
-      clearInterval(LOGIN_POLL); LOGIN_POLL = null;
-      btn.disabled = false; btn.textContent = '打开浏览器登录';
-      msg.textContent = '';
-      toast('等待超时', 'warn');
-    }
-  }, 1200);
-}
 
 /* ── 密钥操作 ── */
 

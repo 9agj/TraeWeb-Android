@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"trae2api-web/internal/auth"
+	"trae2api-web/internal/upstream"
 )
 
 // accountSummary 列表/预览对外结构（脱敏）。
@@ -372,11 +373,17 @@ func isSessionDeadErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	for _, m := range []string{"session", "unauthorized", "401", "invalid token", "token 失效"} {
-		if strings.Contains(msg, m) {
-			return true
-		}
+	// 只认上游用类型化错误明确表达的「凭证被拒绝」。
+	//
+	// 之前是字符串粗判 —— 错误信息里含 session/401/unauthorized 等字样
+	// 就算失效。问题是本地错误也会带这些词：凭证文件里还没有 session 字段时
+	// 返回的就是「凭证里没有 session 字段」，于是账号被硬禁用，
+	// 而它其实完全正常。实测已经这样丢过一次账号。
+	//
+	// 现在必须满足「确实是上游返回的 Error，且分类为 ErrSessionDead」。
+	var ue *upstream.Error
+	if errors.As(err, &ue) {
+		return ue.Kind == upstream.ErrSessionDead
 	}
 	return false
 }

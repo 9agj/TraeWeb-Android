@@ -4,6 +4,7 @@ package upstream
 
 import (
 	"bytes"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,6 +49,17 @@ func (k ErrKind) String() string {
 }
 
 // Error 带分类的上游错误。
+// 凭证配置缺失类错误。
+//
+// 必须与「上游真的拒绝」区分开：前者是本地问题（还没配 session、
+// 或旧格式文件里没有该字段），重试或补配即可；后者才意味着凭证失效。
+// 之前两者混在一起，靠错误文本里有没有 "session" 字样判断，
+// 结果「no session」被误判成 session 失效，把好账号硬禁用掉了。
+var (
+	ErrNoSession      = errors.New("凭证里没有 session 字段")
+	ErrNoRefreshToken = errors.New("凭证里没有 refreshToken 字段")
+)
+
 type Error struct {
 	Kind   ErrKind
 	Status int
@@ -181,7 +193,7 @@ func (c *Client) RefreshTokenIfNeeded(a *auth.Auth, skew time.Duration) (bool, e
 func (c *Client) renewBySessionLocked(a *auth.Auth) error {
 	sess := strings.TrimSpace(a.Session)
 	if sess == "" {
-		return fmt.Errorf("no session")
+		return ErrNoSession
 	}
 	req, err := http.NewRequest(http.MethodPost, c.ugBase()+EpUserToken, bytes.NewReader([]byte("{}")))
 	if err != nil {
@@ -197,6 +209,7 @@ func (c *Client) renewBySessionLocked(a *auth.Auth) error {
 
 	data, err := c.doJSON(req)
 	if err != nil {
+		// %w 保留 upstream.Error 链，上层才能用 errors.As 精确判定是不是 401
 		return fmt.Errorf("get_user_token: %w", err)
 	}
 	var resp struct {
@@ -210,7 +223,9 @@ func (c *Client) renewBySessionLocked(a *auth.Auth) error {
 		return fmt.Errorf("get_user_token parse: %w", err)
 	}
 	if resp.Result.Token == "" {
-		return fmt.Errorf("session_expired: no token in response — re-login required")
+		// 上游 200 但没给 token：凭证已不被接受。
+		// 用类型化错误而不是普通 error，避免上层误判。
+		return &Error{Kind: ErrSessionDead, Status: 200, Msg: "上游未返回 token，凭证可能已失效"}
 	}
 	a.AccessToken = resp.Result.Token
 	if resp.Result.TokenExpireAt > 0 {
@@ -232,7 +247,7 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 		if strings.TrimSpace(a.Session) != "" {
 			return c.renewBySessionLocked(a)
 		}
-		return fmt.Errorf("no refreshToken and no session")
+		return ErrNoRefreshToken
 	}
 	host := a.ApiHost
 	if host == "" {

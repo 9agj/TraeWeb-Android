@@ -3,6 +3,8 @@
 package pool
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -46,7 +48,7 @@ type Status struct {
 	// 对外暴露：Disabled 与 Enabled 都为 false 才算可被 Pick（healthy）。
 	Disabled bool `json:"disabled"`
 	Enabled  bool `json:"enabled"`
-	ErrCount int   `json:"err_count,omitempty"`
+	ErrCount int  `json:"err_count,omitempty"`
 	// CoolKind 冷却类型（plan_limit / soft_rate / error_threshold），未冷却时为空。
 	// 界面据此区分「限流冷却」和「连续错误冷却」，避免混为一谈。
 	CoolKind string `json:"cool_kind,omitempty"`
@@ -62,6 +64,20 @@ type entry struct {
 	errCount int
 	// kind 记录本次冷却的类型，供界面区分「限流冷却」与「错误冷却」。
 	kind CoolKind
+	// disabledFP 是触发硬禁用时那个 token 的指纹。
+	// 用它判断「凭证是否换过」—— 不能直接比 e.a.AccessToken，
+	// 因为 load() 建的是空占位符，任何真实 token 看起来都「变了」。
+	disabledFP string
+}
+
+// tokenFP 返回 token 的短指纹（sha256 前 8 字节的十六进制）。
+// 只存指纹不存 token，避免把凭证写进 state.json。
+func tokenFP(tok string) string {
+	if tok == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (e *entry) healthy(now time.Time) bool {
@@ -77,12 +93,14 @@ func (e *entry) healthy(now time.Time) bool {
 // stateEntry state.json 单账号持久化条目。
 type stateEntry struct {
 	Credits  int64     `json:"credits"`
-	Disabled bool     `json:"disabled"`
+	Disabled bool      `json:"disabled"`
 	Enabled  *bool     `json:"enabled,omitempty"` // 指针：旧文件缺省时按 true 处理，不写回脏值
 	Reason   string    `json:"reason,omitempty"`
 	Until    time.Time `json:"until,omitempty"`
 	// CoolKind 以字符串持久化：数字枚举若将来增删会错位，字符串不会。
 	CoolKind string `json:"cool_kind,omitempty"`
+	// DisabledFP 记录被禁用时 token 的指纹，用于判断凭证是否已更换。
+	DisabledFP string `json:"disabled_fp,omitempty"`
 }
 
 // stateFile 持久化格式。
@@ -107,11 +125,34 @@ func New(stateFp string) *Pool {
 }
 
 // Add 加入账号；已存在则保留原状态、更新凭证。
+
+// applyAuthLocked 把新凭证应用到条目上，并在凭证内容变化时解除禁用。
+//
+// 调用方必须已持有 p.mu。
+//
+// 为什么只在 token 变化时才解除：SyncToDir 每次启动都会调用，
+// 若无条件清除，重启就会把禁用状态刷掉 —— 账号被反复重试又反复失败。
+// 而 token 真的变了说明用户重新登录过，那正是禁用想要表达的「需要重登」已满足。
+func (e *entry) applyAuthLocked(a *auth.Auth) {
+	// 凭证换过（指纹不同）→ 用户重新登录了，解除硬禁用。
+	// 指纹为空表示旧文件没记录过，此时不解除（保守），
+	// 由 Disable() 在下次禁用时补上。
+	fp := tokenFP(a.AccessToken)
+	if e.disabled && fp != "" && e.disabledFP != "" && fp != e.disabledFP {
+		e.disabled = false
+		e.reason = ""
+		e.until = time.Time{}
+		e.errCount = 0
+		e.disabledFP = ""
+	}
+	e.a = a
+}
+
 func (p *Pool) Add(a *auth.Auth) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[a.UID]; ok {
-		e.a = a // 保留 credits/cooling/enabled 状态
+		e.applyAuthLocked(a) // 凭证变了则解除禁用，其余状态保留
 		return
 	}
 	p.byUID[a.UID] = &entry{a: a, enabled: true}
@@ -125,7 +166,7 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	for _, a := range auths {
 		seen[a.UID] = true
 		if e, ok := p.byUID[a.UID]; ok {
-			e.a = a
+			e.applyAuthLocked(a) // 启动时也要能解除禁用（凭证被重新登录过）
 		} else {
 			p.byUID[a.UID] = &entry{a: a, enabled: true}
 		}
@@ -225,7 +266,6 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 	p.saveLocked()
 }
 
-
 // parseCoolKind 把持久化的字符串还原成枚举；未知值按 CoolErr 处理。
 func parseCoolKind(s string) CoolKind {
 	switch s {
@@ -246,6 +286,9 @@ func (p *Pool) Disable(uid, reason string) {
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.disabled = true
+		if e.a != nil {
+			e.disabledFP = tokenFP(e.a.AccessToken)
+		}
 		e.reason = reason
 	}
 	p.saveLocked()
@@ -379,13 +422,14 @@ func (p *Pool) load() {
 			enabled = *s.Enabled
 		}
 		p.byUID[uid] = &entry{
-			a:        &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
-			credits:  s.Credits,
-			disabled: s.Disabled,
-			enabled:  enabled,
-			reason:   s.Reason,
-			until:    s.Until,
-			kind:     parseCoolKind(s.CoolKind),
+			a:          &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
+			credits:    s.Credits,
+			disabled:   s.Disabled,
+			enabled:    enabled,
+			reason:     s.Reason,
+			until:      s.Until,
+			kind:       parseCoolKind(s.CoolKind),
+			disabledFP: s.DisabledFP,
 		}
 	}
 }
@@ -409,6 +453,13 @@ func (p *Pool) saveLocked() {
 			Reason:   reason,
 			Until:    e.until,
 			CoolKind: coolKindOf(e, now),
+			// 只在禁用时记录指纹，其余情况不写
+			DisabledFP: func() string {
+				if e.disabled {
+					return e.disabledFP
+				}
+				return ""
+			}(),
 		}
 		// 仅在软关闭时写 enabled=false；默认 true 用 omitempty 省略，旧版本读为 true。
 		if !e.enabled {
