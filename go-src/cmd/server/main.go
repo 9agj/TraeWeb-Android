@@ -1,13 +1,15 @@
-﻿// main.go trae2api-web 入口：加载配置 → 构建 pool → 起 HTTP 服务。
+// main.go trae2api-web 入口：加载配置 → 构建 pool → 起 HTTP 服务。
 package main
 
 import (
 	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,20 @@ import (
 	"trae2api-web/internal/server"
 	"trae2api-web/internal/upstream"
 )
+
+// isLoopbackListen 判断监听地址是否仅限本机。
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false // 空主机名 = 全部接口
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config json")
@@ -105,6 +121,17 @@ func main() {
 	}
 
 	log.Printf("trae2api-web listening on %s (api_key=%v)", cfg.Listen, cfg.APIKey != "")
+	// 监听非回环地址时给出明确提示。
+	// 此时控制台与管理接口已改为「非本机必须带 Key」（见 isLoopbackReq），
+	// 但仍要让使用者知道自己把服务暴露到了局域网。
+	if !isLoopbackListen(cfg.Listen) {
+		if cfg.APIKey == "" {
+			log.Printf("⚠ 已监听 %s 但**未设置 API Key** —— 同网段任何人都能直接调用，"+
+				"请立即在「接入地址」面板生成密钥", cfg.Listen)
+		} else {
+			log.Printf("已开放局域网访问：%s（控制台/管理接口对非本机要求 Bearer Key）", cfg.Listen)
+		}
+	}
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}

@@ -417,6 +417,23 @@ async function renderRelay(opts) {
     rows.push(row('运行状态', '<span class="warn">' + esc(s.reason || '未启动') + '</span>'));
   }
   rows.push(row('接入地址', '<code>' + esc(s.baseUrlV1 || '') + '</code>'));
+
+  // 局域网访问开关
+  const lan = R.lanAccess ? R.lanAccess() : null;
+  if (lan && lan.ok) {
+    const lanUrl = lan.lan
+      ? 'http://' + (lan.ip || '本机IP') + ':' + lan.port + '/v1'
+      : '';
+    rows.push(row('局域网访问',
+      '<label class="switch" title="允许同网段设备接入"><input type="checkbox" id="swLan"'
+      + (lan.lan ? ' checked' : '') + '><span class="slider"></span></label>'
+      + '<span style="margin-left:9px;font-size:13px">'
+      + (lan.lan ? '已开启' : '仅本机') + '</span>'
+      + (lan.lan
+          ? '<div class="hint" style="margin-top:6px">其他设备用这个地址：<code>'
+            + esc(lanUrl) + '</code><br>需要带 API Key（控制台对非本机要求鉴权）</div>'
+          : '<div class="hint" style="margin-top:6px">仅本机可用。开启后同一 WiFi 下的设备可调用。</div>')));
+  }
   rows.push(row('API Key', '<code class="relay-key">' + esc(s.apiKey || '') + '</code>'
     + ' <button class="btn tiny ghost" id="btnRelayCopy">复制</button>'
     + ' <button class="btn tiny ghost" id="btnRelayGenKey">随机生成</button>'
@@ -466,6 +483,26 @@ async function renderRelay(opts) {
     const hidden = el.style.display === 'none';
     el.style.display = hidden ? 'flex' : 'none';
     btnModels.textContent = hidden ? '收起' : '展开';
+  });
+
+  const swLan = $('#swLan');
+  if (swLan) swLan.addEventListener('change', async () => {
+    const on = swLan.checked;
+    swLan.disabled = true;
+    logLine(on ? '正在开启局域网访问…' : '正在关闭局域网访问…', 'info');
+    const r = await R.setLanAccess(on);
+    swLan.disabled = false;
+    if (r && r.ok) {
+      logLine(on
+        ? '局域网访问已开启：' + (r.ip ? 'http://' + r.ip + ':' + r.port : '')
+        : '已恢复为仅本机访问', on ? 'ok' : 'info');
+      toast(on ? '已开启局域网访问' : '已关闭', 'ok');
+      // 重启需要时间，稍后再刷新状态
+      setTimeout(() => { loadState(); renderRelay({ refreshModels: true }); }, 2500);
+    } else {
+      toast((r && r.error) || '设置失败', 'err');
+      swLan.checked = !on;
+    }
   });
 
   const btnRenew = $('#btnRelayRenew');

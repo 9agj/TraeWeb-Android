@@ -327,6 +327,44 @@ public class NativeApi {
 
     /** 接入服务状态：前端据此渲染面板 */
     @JavascriptInterface
+    /** 读取/设置局域网访问开关。JSON: {ok, lan, ip, port} */
+    @JavascriptInterface
+    public String relayLanAccess() {
+        try {
+            RelayService r = RelayService.get(act);
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("lan", r.lanAccess());
+            String ip = r.lanIp();
+            o.put("ip", ip == null ? "" : ip);
+            o.put("port", r.port());
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("读取局域网设置失败：" + safe(t.getMessage()));
+        }
+    }
+
+    @JavascriptInterface
+    public String relaySetLanAccess(boolean on) {
+        try {
+            RelayService r = RelayService.get(act);
+            boolean changed = r.setLanAccess(on);
+            // 改监听地址必须重启服务才生效
+            if (changed) r.restart();
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("lan", on);
+            o.put("changed", changed);
+            String ip = r.lanIp();
+            o.put("ip", ip == null ? "" : ip);
+            o.put("port", r.port());
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("设置局域网访问失败：" + safe(t.getMessage()));
+        }
+    }
+
+    /** 读取/设置局域网访问开关。JSON: {ok, lan, ip, port} */
     public String relayStatus() {
         try {
             RelayService r = RelayService.get(ctx);

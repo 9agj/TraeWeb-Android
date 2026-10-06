@@ -181,6 +181,21 @@
 
 
   /** 随机生成新 Key（返回 {ok, apiKey}） */
+  /** 局域网访问设置：{ok, lan, ip, port} */
+  function lanAccess() {
+    if (!isNative || !Native.relayLanAccess) return null;
+    try { return JSON.parse(Native.relayLanAccess()); } catch (e) { return null; }
+  }
+
+  /** 开关局域网访问（改监听地址会重启服务） */
+  function setLanAccess(on) {
+    if (!isNative || !Native.relaySetLanAccess) {
+      return { ok: false, error: '仅支持在 APK 内使用' };
+    }
+    try { return JSON.parse(Native.relaySetLanAccess(!!on)); }
+    catch (e) { return { ok: false, error: e.message }; }
+  }
+
   function generateKey() {
     if (!isNative || !Native.relayGenerateKey) return { ok: false, error: '原生桥不可用' };
     try { return JSON.parse(Native.relayGenerateKey()); }
@@ -210,5 +225,7 @@
     importCallback: importCallback,
     generateKey: generateKey,
     setKey: setKey,
+    lanAccess: lanAccess,
+    setLanAccess: setLanAccess,
   };
 })();

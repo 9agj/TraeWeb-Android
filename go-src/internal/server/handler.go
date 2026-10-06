@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -77,18 +78,19 @@ func NewHandler(cfg Config) *Handler {
 	// 管理面板：本地面板
 	// 读接口无鉴权（局域网内只读）；写接口（accounts 写/login/refresh/authorize）
 	// 经 withAdminAuth 校验 Bearer = TW2A_API_KEY（见 §4 安全设计）。
-	h.mux.HandleFunc("GET /admin", h.adminPage)
-	h.mux.HandleFunc("GET /admin/api/credits", h.adminCredits)
+	// 控制台与只读接口：本机免密，局域网要求带 Key（见 isLoopbackReq 注释）
+	h.mux.HandleFunc("GET /admin", h.withLocalOrKey(h.adminPage))
+	h.mux.HandleFunc("GET /admin/api/credits", h.withLocalOrKey(h.adminCredits))
 	// 账号 CRUD
-	h.mux.HandleFunc("GET /admin/api/accounts", h.adminAccounts)
+	h.mux.HandleFunc("GET /admin/api/accounts", h.withLocalOrKey(h.adminAccounts))
 	h.mux.HandleFunc("POST /admin/api/accounts/import", h.withAdminAuth(h.adminImportAccount))
 	h.mux.HandleFunc("DELETE /admin/api/accounts/{uid}", h.withAdminAuth(h.adminDeleteAccount))
 	h.mux.HandleFunc("PATCH /admin/api/accounts/{uid}", h.withAdminAuth(h.adminPatchAccount))
 	h.mux.HandleFunc("POST /admin/api/accounts/{uid}/refresh", h.withAdminAuth(h.adminRefreshAccount))
-	h.mux.HandleFunc("GET /admin/api/accounts/{uid}/json", h.adminAccountJSON)
+	h.mux.HandleFunc("GET /admin/api/accounts/{uid}/json", h.withLocalOrKey(h.adminAccountJSON))
 	// Web 登录闭环
 	h.mux.HandleFunc("POST /admin/api/login", h.withAdminAuth(h.adminLoginStart))
-	h.mux.HandleFunc("GET /admin/api/login/result", h.adminLoginResult)
+	h.mux.HandleFunc("GET /admin/api/login/result", h.withLocalOrKey(h.adminLoginResult))
 	h.mux.HandleFunc("POST /admin/api/login/cancel", h.withAdminAuth(h.adminLoginCancel))
 	// TRAE 回调落点（/authorize）：无需 Bearer（TRAE 浏览器 302 不带 key），
 	// 仅捕获 query 写 pending 队列，不直接落盘 token。
@@ -124,23 +126,56 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// isLoopbackReq 判断请求是否来自本机回环。
+//
+// 用途：控制台与只读管理接口在**本机**免密（手机上的 WebView 直接可用），
+// 而一旦监听 0.0.0.0 暴露到局域网，非本机的请求就必须带 Key ——
+// 否则 /admin 会把 API Key 注入页面直接吐给任何请求方，
+// 同网段任何人都能拿走你的密钥并白嫖账号。
+func isLoopbackReq(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// 没有端口（理论上不会）时退化为整体解析
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// withLocalOrKey 本机免密，非本机要求 Bearer = APIKey。
+func (h *Handler) withLocalOrKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if isLoopbackReq(r) {
+			next(w, r)
+			return
+		}
+		h.checkKey(w, r, next)
+	}
+}
+
+// checkKey 校验 Bearer Key（不区分来源），供 withAuth / withAdminAuth / withLocalOrKey 复用。
+func (h *Handler) checkKey(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	if h.cfg.APIKey == "" {
+		// 未配置 Key：本地无 key 场景仍可用；此时不应监听非回环地址
+		next(w, r)
+		return
+	}
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) < len(prefix) || !strings.EqualFold(authz[:len(prefix)], prefix) {
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(authz[len(prefix):]), []byte(h.cfg.APIKey)) != 1 {
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+		return
+	}
+	next(w, r)
+}
+
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.APIKey != "" {
-			authz := r.Header.Get("Authorization")
-			const prefix = "Bearer "
-			if len(authz) < len(prefix) || !strings.EqualFold(authz[:len(prefix)], prefix) {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
-				return
-			}
-			key := authz[len(prefix):]
-			// 常量时间比较，防时序攻击（本地代理但按规范）。
-			if subtle.ConstantTimeCompare([]byte(key), []byte(h.cfg.APIKey)) != 1 {
-				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
-				return
-			}
-		}
-		next(w, r)
+		h.checkKey(w, r, next)
 	}
 }
 

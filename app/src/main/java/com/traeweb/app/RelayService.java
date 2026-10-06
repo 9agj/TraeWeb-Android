@@ -68,6 +68,43 @@ public class RelayService {
         return k;
     }
 
+
+    /** 是否允许局域网访问（默认关闭）。 */
+    public boolean lanAccess() {
+        return prefs.getBoolean("relay_lan_access", false);
+    }
+
+    /** 设置局域网访问开关。返回是否发生了变化（变了才需要重启服务）。 */
+    public boolean setLanAccess(boolean on) {
+        boolean cur = lanAccess();
+        prefs.edit().putBoolean("relay_lan_access", on).apply();
+        return cur != on;
+    }
+
+    /** 本机在局域网中的 IPv4 地址（取不到时返回 null）。 */
+    public String lanIp() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> ifaces =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                java.net.NetworkInterface ni = ifaces.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String name = ni.getName();
+                // 跳过移动数据/隧道类接口
+                if (name != null && (name.startsWith("rmnet") || name.startsWith("tun")
+                        || name.startsWith("ppp") || name.startsWith("dummy"))) continue;
+                java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress a = addrs.nextElement();
+                    if (a instanceof java.net.Inet4Address && !a.isLoopbackAddress()) {
+                        return a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
     /**
      * 生成一个新的接入服务 Key。
      *
@@ -190,7 +227,10 @@ public class RelayService {
             pb.redirectErrorStream(true);
 
             Map<String, String> env = pb.environment();
-            env.put("TW2A_LISTEN", "127.0.0.1:" + HTTP_PORT);
+            // 默认只听本机；开启局域网访问后监听全部接口。
+            // 非回环监听时 Go 侧会要求非本机请求带 Bearer Key（见 isLoopbackReq），
+            // 否则控制台页面会把 API Key 注入后吐给同网段的任何请求方。
+            env.put("TW2A_LISTEN", (lanAccess() ? "0.0.0.0:" : "127.0.0.1:") + HTTP_PORT);
             env.put("TW2A_CALLBACK_PORT", String.valueOf(CALLBACK_PORT));
             env.put("TW2A_API_KEY", apiKey());
             env.put("TW2A_AUTH_DIR", authDir.getAbsolutePath());
