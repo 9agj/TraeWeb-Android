@@ -75,6 +75,10 @@ func (e *SOLOStreamError) Kind() ErrKind {
 		return ErrPlanLimit
 	case CodeRateLimit:
 		return ErrSoftRate
+	case CodeQuotaEmpty:
+		// 4001 是上游对「请求参数/配额」的拒绝（例如 messages 为空）。
+		// 属于调用方问题，不能冷却账号 —— 否则一个写错的请求会把池子拖垮。
+		return ErrBadRequest
 	default:
 		return ErrClient
 	}

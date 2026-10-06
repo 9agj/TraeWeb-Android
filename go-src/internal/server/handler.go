@@ -1,7 +1,8 @@
-﻿// Package server 暴露 OpenAI 兼容 HTTP 接口，内部驱动 pool 挑号 + upstream 转发。
+// Package server 暴露 OpenAI 兼容 HTTP 接口，内部驱动 pool 挑号 + upstream 转发。
 package server
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -42,7 +43,7 @@ type Handler struct {
 	// Web 登录 pending 态：pendingID → 登录进行中的临时上下文。
 	// 回调 /authorize 捕获后标记成功；面板轮询 result 取结果。
 	loginMu sync.Mutex
-	logins   map[string]*pendingLogin
+	logins  map[string]*pendingLogin
 }
 
 // NewHandler 构建 handler。
@@ -347,10 +348,44 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var peek struct {
-		Stream bool   `json:"stream"`
-		Model  string `json:"model"`
+		Stream   bool   `json:"stream"`
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
 	}
-	_ = json.Unmarshal(body, &peek)
+	if err := json.Unmarshal(body, &peek); err != nil {
+		// JSON 本身不合法 → 直接 400，不要拿去打上游
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
+			"请求体不是合法 JSON: "+err.Error())
+		return
+	}
+
+	// 本地先做基本校验。
+	//
+	// 为什么必须本地拦：上游对这类请求返回 4001，而 4001 在旧逻辑里
+	// 会走 NoteError 累积 —— 一个写错的请求反复重试就能把账号冷却掉，
+	// 之后正常请求全部 503。错误参数是调用方的问题，不该有任何代价。
+	if len(peek.Messages) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
+			"messages 不能为空")
+		return
+	}
+	for i, m := range peek.Messages {
+		if strings.TrimSpace(m.Role) == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("messages[%d].role 不能为空", i))
+			return
+		}
+		// content 允许是字符串或内容块数组；但 null / 空对象不行
+		c := bytes.TrimSpace(m.Content)
+		if len(c) == 0 || string(c) == "null" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("messages[%d].content 不能为空", i))
+			return
+		}
+	}
 
 	configName, err := h.mapModel(peek.Model)
 	if err != nil {
@@ -438,6 +473,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				case upstream.ErrSoftRate:
 					// 4011 限流 → 短冷却，不累计错误计数（见 handleStreamError 注释）
 					h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "4011 rate limit")
+				case upstream.ErrBadRequest:
+					// 请求不合法 → 不惩罚账号（见 handleStreamError 注释）
 				default:
 					h.cfg.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				}
@@ -467,6 +504,10 @@ func (h *Handler) handleStreamError(uid string, se *upstream.SOLOStreamError) {
 		// 4011 限流：短冷却，且**不走 NoteError**。
 		// 走 NoteError 会在 3 次后触发 10 分钟中冷却，把几十秒能恢复的限流放大 10 倍。
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "4011 rate limit")
+	case upstream.ErrBadRequest:
+		// 请求本身不合法（参数错/模型名错）—— 与账号无关，不做任何惩罚。
+		// 之前它会落到 default 走 NoteError，导致「一个写错的请求
+		// 让账号累积错误直到冷却」，表现为后续正常请求全部 503。
 	default:
 		h.cfg.Pool.NoteError(uid, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 	}

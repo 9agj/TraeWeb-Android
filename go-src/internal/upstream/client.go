@@ -1,11 +1,11 @@
-﻿// client.go SOLO 上游客户端：llm_utils_chat / get_detail_param / ExchangeToken /
+// client.go SOLO 上游客户端：llm_utils_chat / get_detail_param / ExchangeToken /
 // checkin_credits / ide_user_ent_usage + 错误分类。
 package upstream
 
 import (
 	"bytes"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +27,10 @@ const (
 	ErrNotFound                   // 404 → 短冷却 60s 不累计 errCount
 	ErrServer                     // 5xx
 	ErrClient                     // 其他 4xx
+	// ErrBadRequest 表示请求本身不合法（参数错、模型名错等）。
+	// 这是**调用方**的问题，与账号状态无关 —— 绝不能因此冷却或禁用账号，
+	// 否则一个写错的请求会把整个池子拖垮。
+	ErrBadRequest
 )
 
 func (k ErrKind) String() string {
@@ -43,6 +47,8 @@ func (k ErrKind) String() string {
 		return "server"
 	case ErrClient:
 		return "client"
+	case ErrBadRequest:
+		return "bad_request"
 	default:
 		return "none"
 	}
