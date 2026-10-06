@@ -330,17 +330,33 @@ func sortInts(a []int) {
 // Stream 流式转换：SOLO SSE → OpenAI SSE chunk，每 chunk flush，保证至少一个 [DONE]。
 // 调用方必须先设置过 status 200；本函数自设 SSE headers。
 func Stream(w http.ResponseWriter, r io.Reader) error {
-	return streamOpts(w, r, nil)
+	return streamOpts(w, r, nil, nil)
 }
 
 // StreamWithError 同 Stream，额外在遇到上游 event:error 时回调 onErr（非 nil），
 // 供调用方冷却账号/记录日志；错误信息同时注入 SSE 事件流。
 func StreamWithError(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)) error {
-	return streamOpts(w, r, onErr)
+	return streamOpts(w, r, onErr, nil)
+}
+
+// StreamWithHooks 同时支持错误回调与事件回调（onEvent 在每个解析出的事件上调用，
+// 用于捕获 token_usage 做用量统计）。
+func StreamWithHooks(
+	w http.ResponseWriter,
+	r io.Reader,
+	onErr func(*SOLOStreamError),
+	onEvent func(*SOLOEvent),
+) error {
+	return streamOpts(w, r, onErr, onEvent)
 }
 
 // streamOpts Stream 的可选参数版本。
-func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)) error {
+func streamOpts(
+	w http.ResponseWriter,
+	r io.Reader,
+	onErr func(*SOLOStreamError),
+	onEvent func(*SOLOEvent),
+) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -399,6 +415,10 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 			return err
 		}
 		if ev := scanLine(st, strings.TrimRight(line, "\r\n")); ev != nil {
+			// 事件回调（用于捕获 token_usage 做用量统计）
+			if onEvent != nil {
+				onEvent(ev)
+			}
 			switch ev.Event {
 			case "output":
 				delta := map[string]any{}

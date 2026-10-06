@@ -41,6 +41,9 @@ type Handler struct {
 	cfg Config
 	mux *http.ServeMux
 
+	// usage 调用用量统计（内存态，见 usage.go）
+	usage *UsageTracker
+
 	// Web 登录 pending 态：pendingID → 登录进行中的临时上下文。
 	// 回调 /authorize 捕获后标记成功；面板轮询 result 取结果。
 	loginMu sync.Mutex
@@ -70,7 +73,12 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.DefaultModel == "" {
 		cfg.DefaultModel = upstream.DefaultConfigName
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux(), logins: map[string]*pendingLogin{}}
+	h := &Handler{
+		cfg:    cfg,
+		mux:    http.NewServeMux(),
+		logins: map[string]*pendingLogin{},
+		usage:  NewUsageTracker(),
+	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -81,6 +89,8 @@ func NewHandler(cfg Config) *Handler {
 	// 控制台与只读接口：本机免密，局域网要求带 Key（见 isLoopbackReq 注释）
 	h.mux.HandleFunc("GET /admin", h.withLocalOrKey(h.adminPage))
 	h.mux.HandleFunc("GET /admin/api/credits", h.withLocalOrKey(h.adminCredits))
+	h.mux.HandleFunc("GET /admin/api/usage", h.withLocalOrKey(h.adminUsage))
+	h.mux.HandleFunc("POST /admin/api/usage/reset", h.withAdminAuth(h.adminUsageReset))
 	// 账号 CRUD
 	h.mux.HandleFunc("GET /admin/api/accounts", h.withLocalOrKey(h.adminAccounts))
 	h.mux.HandleFunc("POST /admin/api/accounts/import", h.withAdminAuth(h.adminImportAccount))
@@ -429,6 +439,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	body = setModelInBody(body, configName)
 
+	// 用量统计：记录本次请求的起止与模型名，成功路径再补 token 数
+	started := time.Now()
+	reqModel := peek.Model
+	if reqModel == "" {
+		reqModel = configName
+	}
+
 	tried := map[string]bool{}
 	var lastErr error
 	for i := 0; i < h.cfg.MaxRotate; i++ {
@@ -489,10 +506,28 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if peek.Stream {
 			h.cfg.Pool.NoteSuccess(acct.UID)
 			// 流内业务错误（1005 plan/5xx 等）→ 冷却账号，错误信息注入 SSE。
-			_ = upstream.StreamWithError(w, rc, func(se *upstream.SOLOStreamError) {
+			// 顺带捕获 token_usage 事件用于统计（StreamWithError 内部逐事件回调）。
+			var lastUsage map[string]any
+			_ = upstream.StreamWithHooks(w, rc, func(se *upstream.SOLOStreamError) {
 				h.handleStreamError(acct.UID, se)
+			}, func(ev *upstream.SOLOEvent) {
+				if ev != nil && ev.Usage != nil {
+					lastUsage = ev.Usage
+				}
 			})
 			rc.Close()
+			h.usage.Record(UsageRecord{
+				Time:             started.Format("15:04:05"),
+				Model:            reqModel,
+				Account:          acct.Nickname,
+				PromptTokens:     usageInt(lastUsage, "prompt_tokens"),
+				CompletionTokens: usageInt(lastUsage, "completion_tokens"),
+				ReasoningTokens:  usageInt(lastUsage, "reasoning_tokens"),
+				TotalTokens:      usageInt(lastUsage, "total_tokens"),
+				DurationMS:       time.Since(started).Milliseconds(),
+				Stream:           true,
+				OK:               true,
+			})
 			return
 		}
 		resp, err := upstream.Aggregate(rc)
@@ -520,6 +555,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		h.cfg.Pool.NoteSuccess(acct.UID)
 		writeJSON(w, http.StatusOK, resp)
+		// 用量统计：resp 里带 upstream 返回的真实 usage
+		rec := UsageRecord{
+			Time:       started.Format("15:04:05"),
+			Model:      reqModel,
+			Account:    acct.Nickname,
+			DurationMS: time.Since(started).Milliseconds(),
+			OK:         true,
+		}
+		if u, ok := resp["usage"].(map[string]any); ok {
+			rec.PromptTokens = usageAnyInt(u, "prompt_tokens")
+			rec.CompletionTokens = usageAnyInt(u, "completion_tokens")
+			rec.ReasoningTokens = usageAnyInt(u, "reasoning_tokens")
+			rec.TotalTokens = usageAnyInt(u, "total_tokens")
+		}
+		h.usage.Record(rec)
 		return
 	}
 	msg := "all accounts unavailable (cooling/disabled)"
@@ -527,6 +577,33 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		msg += ": " + lastErr.Error()
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+	h.usage.Record(UsageRecord{
+		Time:       started.Format("15:04:05"),
+		Model:      reqModel,
+		DurationMS: time.Since(started).Milliseconds(),
+		Stream:     peek.Stream,
+		OK:         false,
+		Error:      msg,
+	})
+}
+
+// usageInt 从 token_usage 事件里取整数值（上游给的是 JSON number → float64）。
+func usageInt(m map[string]any, k string) int64 { return usageAnyInt(m, k) }
+
+// usageAnyInt 安全取整数。
+func usageAnyInt(m map[string]any, k string) int64 {
+	if m == nil {
+		return 0
+	}
+	switch v := m[k].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }
 
 // handleStreamError 流式响应中的上游业务错误 → pool 冷却状态机。

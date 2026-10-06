@@ -137,3 +137,20 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
+
+// adminUsage GET /admin/api/usage：调用用量统计（今日 / 累计 / 最近明细）。
+func (h *Handler) adminUsage(w http.ResponseWriter, r *http.Request) {
+	if h.usage == nil {
+		writeJSON(w, http.StatusOK, UsageSnapshot{})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.usage.Snapshot())
+}
+
+// adminUsageReset POST /admin/api/usage/reset：清零统计。
+func (h *Handler) adminUsageReset(w http.ResponseWriter, r *http.Request) {
+	if h.usage != nil {
+		h.usage.Reset()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}

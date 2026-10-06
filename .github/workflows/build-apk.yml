@@ -115,6 +115,22 @@ jobs:
           find / -name 'aapt2' -type f 2>/dev/null | head -3
           exit 1
 
+      - name: Build standalone server (all platforms)
+        run: |
+          cd go-src
+          chmod +x build-all.sh
+          OUT=../out/server bash build-all.sh
+          echo "服务端产物:"
+          ls -lh ../out/server | tail -n +2
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraeWeb-Server
+          path: out/server/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Collect APK
         run: |
           mkdir -p out
@@ -171,11 +187,59 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Package server bundle
+        run: |
+          cd out/server
+          # 附带配置样例与启动脚本，解压即用
+          mkdir -p bundle/auths bundle/data
+          cp README.txt bundle/
+          cp trae2api-* bundle/
+          cat > bundle/start-linux.sh <<'EOS'
+          #!/bin/bash
+          # 启动脚本（Linux/macOS）。首次运行前先执行一次 --gen-key 生成密钥。
+          cd "$(dirname "$0")"
+          if [ -z "$TW2A_API_KEY" ]; then
+            echo "未设置 TW2A_API_KEY。可执行以下命令生成一个："
+            echo "  ./trae2api-linux-amd64 --gen-key"
+            exit 1
+          fi
+          ARCH=$(uname -m)
+          case "$ARCH" in
+            x86_64|amd64) BIN=./trae2api-linux-amd64 ;;
+            aarch64|arm64) BIN=./trae2api-linux-arm64 ;;
+            armv7l|armv6l) BIN=./trae2api-linux-arm ;;
+            i386|i686) BIN=./trae2api-linux-386 ;;
+            *) echo "未知架构: $ARCH"; exit 1 ;;
+          esac
+          export TW2A_AUTH_DIR="${TW2A_AUTH_DIR:-./auths}"
+          export TW2A_STATE_FILE="${TW2A_STATE_FILE:-./data/state.json}"
+          exec "$BIN"
+          EOS
+          chmod +x bundle/start-linux.sh
+          chmod +x bundle/trae2api-linux-* bundle/trae2api-darwin-* 2>/dev/null || true
+          cat > bundle/start-windows.bat <<'EOW'
+          @echo off
+          cd /d "%~dp0"
+          if "%TW2A_API_KEY%"=="" (
+            echo 未设置 TW2A_API_KEY。先生成：
+            echo   trae2api-windows-amd64.exe --gen-key
+            exit /b 1
+          )
+          set TW2A_AUTH_DIR=auths
+          set TW2A_STATE_FILE=data\state.json
+          trae2api-windows-amd64.exe
+          EOW
+          # -X 去掉多余属性；unzip 时会保留可执行位（zip 会记录 Unix 权限）
+          zip -r -X ../TraeWeb-Server.zip bundle >/dev/null
+          echo "已打包: $(du -h ../TraeWeb-Server.zip | cut -f1)"
+
       - name: Create Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: out/TraeWeb.apk
+          files: |
+            out/TraeWeb.apk
+            out/TraeWeb-Server.zip
           generate_release_notes: true
 
       - name: Summary
@@ -189,4 +253,14 @@ jobs:
             echo "| 文件 | \`TraeWeb.apk\` |"
             echo "| 大小 | ${SIZE} |"
             echo "| 提交 | \`${{ github.sha }}\` |"
+            echo ""
+            echo "### 服务端产物（8 个平台）"
+            echo ""
+            echo "| 平台 | 文件 |"
+            echo "|---|---|"
+            echo "| Linux | amd64 / arm64 / 386 / arm |"
+            echo "| Windows | amd64 / arm64 |"
+            echo "| macOS | amd64 / arm64 |"
+            echo ""
+            echo "打包为 \`TraeWeb-Server.zip\`，解压后见 README.txt。"
           } >> "$GITHUB_STEP_SUMMARY"

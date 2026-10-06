@@ -3,7 +3,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -36,7 +39,19 @@ func isLoopbackListen(addr string) bool {
 
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config json")
+	genKey := flag.Bool("gen-key", false, "生成一个访问密钥并退出")
 	flag.Parse()
+
+	// 生成密钥：独立部署时用一次，之后写进 TW2A_API_KEY。
+	// 用 crypto/rand 取 24 字节再 base64url，192 位熵。
+	if *genKey {
+		buf := make([]byte, 24)
+		if _, err := rand.Read(buf); err != nil {
+			log.Fatalf("生成密钥失败: %v", err)
+		}
+		fmt.Println("sk-trae-" + base64.RawURLEncoding.EncodeToString(buf))
+		return
+	}
 
 	cfg, err := Load(*cfgPath)
 	if err != nil {

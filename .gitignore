@@ -28,3 +28,4 @@ app/src/main/jniLibs/arm64-v8a/libtrae2api.so
 # Go 服务运行时数据
 go-src/auths/
 go-src/data/
+dist/
