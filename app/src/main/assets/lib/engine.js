@@ -298,10 +298,28 @@
     const acc = findAccount(accountId);
     if (!acc) return { ok: false, error: '账号不存在' };
 
+    // 主动续期：只要 token 在 2 小时内过期就提前换新。
+    // relay 只认 refreshToken 续期，而 WebView 登录没有 refreshToken ——
+    // 推一个马上要死的 token 过去，几小时后上游就会全部 401。
+    const exp0 = T.parseJwtExp(acc.token);
+    const soon = exp0 && (exp0 - Math.floor(Date.now() / 1000)) < 7200;
+    if ((!tokenAlive(acc) || soon) && acc.session) {
+      const r0 = await T.getToken(acc.session);
+      if (r0.ok) {
+        updateAccount(accountId, {
+          token: r0.token,
+          tokenUpdatedAt: new Date().toISOString(),
+          tokenAlive: true,
+          lastError: null,
+        });
+        if (!silent) log('[接入服务] 已提前续期（原 token 即将过期）', 'relay');
+      }
+    }
+
     // 确保有可用 JWT（过期会自动用 session 换新）
-    const t = await ensureToken(acc);
+    const t = await ensureToken(findAccount(accountId));
     if (!t.ok) {
-      if (!silent) log('[中转站] 同步跳过：' + t.reason, 'relay');
+      if (!silent) log('[接入服务] 同步跳过：' + t.reason, 'relay');
       return { ok: false, error: t.reason };
     }
 
@@ -311,6 +329,9 @@
     try {
       const res = await R.importAccount({
         token: cur.token,
+        // session 一并推送：relay 靠它自行续期（约 14 天），
+        // 否则 JWT 一过期 relay 就无能为力。
+        session: cur.session || '',
         deviceId: cur.deviceId || '',
         machineId: cur.deviceId || '',
         uid: cur.accountUid || '',
@@ -686,6 +707,85 @@
     return out;
   }
 
+
+
+  /**
+   * 静默续期：直接读 WebView 的 cookie，不打开任何界面。
+   *
+   * 用于启动时和定时任务 —— 用户无需任何操作，凭证自动保持新鲜。
+   * 若 WebView 里没有登录态（cookie 已过期），返回失败，由用户手动登录。
+   */
+  async function renewSilently() {
+    const WL = window.NativeBridge && window.NativeBridge.WebLogin;
+    if (!WL || !WL.readCookie) return { ok: false, error: '仅支持在 APK 内使用' };
+
+    const c = WL.readCookie();
+    if (!c || !c.session) return { ok: false, error: 'WebView 里没有登录态' };
+
+    const t = await T.getToken(c.session);
+    if (!t.ok) return { ok: false, error: t.error };
+
+    const uid = T.parseAccountUid(t.token) || null;
+    const accounts = listAccounts();
+    const acc = uid ? findDuplicateByUid(uid) : (accounts[0] || null);
+    if (!acc) return { ok: false, error: '没有可更新的账号' };
+
+    updateAccount(acc.id, {
+      session: c.session,
+      token: t.token,
+      tokenUpdatedAt: new Date().toISOString(),
+      tokenAlive: true,
+      accountUid: uid || acc.accountUid,
+      lastError: null,
+    });
+    diag('renew', '静默续期成功: ' + acc.id);
+
+    const pr = await pushToRelay(acc.id, { silent: true });
+    return { ok: true, account: findAccount(acc.id), pushed: pr.ok };
+  }
+
+  /**
+   * 从 WebView 的 cookie jar 重新读取 session 并续期。
+   *
+   * 用途：token 过期后不必让用户重新登录 —— WebView 的登录态还在
+   * （session cookie 约 14 天），直接读出来换新 JWT 即可。
+   */
+  async function refreshFromWebView() {
+    const WL = window.NativeBridge && window.NativeBridge.WebLogin;
+    if (!WL || !WL.available) return { ok: false, error: '仅支持在 APK 内使用' };
+
+    diag('renew', '=== 尝试从 WebView 读取登录态 ===');
+    WL.clear();
+    WL.open();                       // 打开登录页；若已登录，它会立刻检测到凭证
+    const r = await WL.wait(60000);  // 已登录时通常几秒内返回
+    if (!r || !r.session) {
+      diag('renew', '未读到 session');
+      return { ok: false, error: '未读到登录态，可能需要重新登录' };
+    }
+    diag('renew', '读到 session（' + r.session.length + ' 字符）');
+
+    const t = await T.getToken(r.session);
+    if (!t.ok) return { ok: false, error: t.error };
+
+    const uid = T.parseAccountUid(t.token) || null;
+    const accounts = listAccounts();
+    const acc = uid ? findDuplicateByUid(uid) : accounts[0];
+    if (!acc) return { ok: false, error: '没有可更新的账号' };
+
+    updateAccount(acc.id, {
+      session: r.session,
+      token: t.token,
+      tokenUpdatedAt: new Date().toISOString(),
+      tokenAlive: true,
+      accountUid: uid || acc.accountUid,
+      lastError: null,
+    });
+    diag('renew', '凭证已更新: ' + acc.id);
+
+    const pr = await pushToRelay(acc.id, { silent: false });
+    return { ok: true, account: findAccount(acc.id), pushed: pr.ok };
+  }
+
   /**
    * 用 refreshToken 换新的 access/refresh 对。
    *
@@ -883,6 +983,8 @@
     getStatus: getStatus,
     pushToRelay: pushToRelay,
     pushAllToRelay: pushAllToRelay,
+    refreshFromWebView: refreshFromWebView,
+    renewSilently: renewSilently,
     getGithub: getGithub,
     setGithub: setGithub,
     getSettings: getSettings,

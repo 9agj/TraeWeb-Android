@@ -680,6 +680,45 @@ public class NativeApi {
     /* ------------------------------------------------------ 内置登录页 */
 
     /**
+     * 静默读取 WebView 的登录 cookie（不打开任何界面）。
+     *
+     * CookieManager 是进程级 API，只要本 App 的 WebView 曾经登录过，
+     * 就能直接读到 X-Cloudide-Session —— 无需再弹登录页。
+     * 用于「启动时自动续期」这类后台场景。
+     *
+     * @return JSON：{ok, session, token} 或 {ok:false, error}
+     */
+    @JavascriptInterface
+    public String readWebCookie() {
+        try {
+            String cookies = android.webkit.CookieManager.getInstance()
+                    .getCookie("https://www.trae.cn");
+            String session = null;
+            if (cookies != null) {
+                for (String part : cookies.split(";")) {
+                    String p = part.trim();
+                    int eq = p.indexOf('=');
+                    if (eq > 0 && p.substring(0, eq).equals("X-Cloudide-Session")) {
+                        session = p.substring(eq + 1);
+                        break;
+                    }
+                }
+            }
+            JSONObject o = new JSONObject();
+            if (session == null || session.isEmpty()) {
+                o.put("ok", false);
+                o.put("error", "WebView 里没有登录态");
+            } else {
+                o.put("ok", true);
+                o.put("session", session);
+            }
+            return o.toString();
+        } catch (Throwable t) {
+            return errorJson("读取 cookie 失败：" + safe(t.getMessage()));
+        }
+    }
+
+    /**
      * 打开内置登录 WebView。
      *
      * 关键区别：登录发生在本 App 的 WebView 里，所以 X-Cloudide-Session

@@ -424,7 +424,8 @@ async function renderRelay(opts) {
   if (running && RELAY_MODELS) {
     rows.push(row('可用模型', '<span class="ok">' + RELAY_MODELS.length + ' 个</span>'
       + ' <button class="btn tiny ghost" id="btnRelayModels">展开</button>'
-      + ' <button class="btn tiny ghost" id="btnRelaySync">同步账号</button>'));
+      + ' <button class="btn tiny ghost" id="btnRelaySync">同步账号</button>'
+      + ' <button class="btn tiny ghost" id="btnRelayRenew">刷新凭证</button>'));
   } else if (running) {
     rows.push(row('可用模型', '<span class="warn">拉取中…</span>'));
   }
@@ -465,6 +466,26 @@ async function renderRelay(opts) {
     const hidden = el.style.display === 'none';
     el.style.display = hidden ? 'flex' : 'none';
     btnModels.textContent = hidden ? '收起' : '展开';
+  });
+
+  const btnRenew = $('#btnRelayRenew');
+  if (btnRenew) btnRenew.addEventListener('click', async () => {
+    if (RELAY_BUSY) return;
+    RELAY_BUSY = true;
+    btnRenew.disabled = true;
+    btnRenew.textContent = '刷新中…';
+    logLine('正在从登录页读取登录态并续期…', 'info');
+    const r = await E.refreshFromWebView();
+    RELAY_BUSY = false;
+    btnRenew.disabled = false;
+    btnRenew.textContent = '刷新凭证';
+    if (r.ok) {
+      toast(r.pushed ? '凭证已刷新并同步' : '凭证已刷新（同步失败）', r.pushed ? 'ok' : 'err');
+      loadState();
+    } else {
+      toast(r.error || '刷新失败', 'err');
+    }
+    renderRelay({ refreshModels: true });
   });
 
   const btnSync = $('#btnRelaySync');
@@ -738,6 +759,38 @@ function boot() {
   logLine(native ? 'TraeWeb 已就绪（内置引擎）· 无需服务器' : 'TraeWeb 已就绪（浏览器模式：网络功能不可用）', 'info');
   loadState();
   setInterval(loadState, 60000);
+
+  // 凭证自动保活。
+  // 背景：WebView 登录拿到的是 session（约 14 天），换出的 JWT 只有约 9.5 小时。
+  // relay 只认 refreshToken 续期，而这类账号没有 refreshToken ——
+  // 不主动续期的话，几小时后上游就会全部 401、余额显示 0。
+  // 这里直接读 WebView 的 cookie 换新 JWT（不弹界面），并推给 relay。
+  if (native) {
+    const ensureFresh = async (label) => {
+      try {
+        const list = E.listAccounts();
+        if (!list.length) return;
+        const now = Math.floor(Date.now() / 1000);
+        const need = list.some((a) => {
+          const exp = window.TraeApi.parseJwtExp(a.token);
+          return !exp || (exp - now) < 7200;   // 2 小时内过期
+        });
+        if (!need) return;
+        logLine((label || '') + '检测到凭证即将过期，正在自动续期…', 'warn');
+        const r = await E.renewSilently();
+        if (r.ok) {
+          logLine('凭证已自动续期' + (r.pushed ? '并同步到接入服务' : '（同步失败）'), r.pushed ? 'ok' : 'err');
+          loadState();
+        } else {
+          logLine('自动续期未成功：' + r.error, 'warn');
+        }
+      } catch (e) { /* 静默 */ }
+    };
+    // 启动后稍等（让 relay 先起来），然后检查
+    setTimeout(() => ensureFresh(''), 6000);
+    // 每 2 小时检查一次，长开 App 时也能保持
+    setInterval(() => ensureFresh(''), 2 * 3600 * 1000);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', boot);

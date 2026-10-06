@@ -166,11 +166,70 @@ func (c *Client) RefreshTokenIfNeeded(a *auth.Auth, skew time.Duration) (bool, e
 	return true, nil
 }
 
+// RenewBySession 用 X-Cloudide-Session cookie 换新 JWT。
+//
+// 为什么需要这条路径：WebView / 浏览器登录拿到的是 session（约 14 天），
+// 不是 refreshToken。而 refreshLocked 只认 refreshToken，导致这类账号
+// 在 JWT（约 9.5 小时）过期后无法续期 —— 表现为上游全部 401、
+// 控制台余额显示 0、对话返回 503。
+//
+// session 可反复使用（不像 refreshToken 会轮换），所以这条路更稳。
+// 持 a 写锁调用；调用方负责 SaveAtomic。
+func (c *Client) renewBySessionLocked(a *auth.Auth) error {
+	sess := strings.TrimSpace(a.Session)
+	if sess == "" {
+		return fmt.Errorf("no session")
+	}
+	req, err := http.NewRequest(http.MethodPost, c.ugBase()+EpUserToken, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", clientUA)
+	// session 是 cookie，不是 Authorization 头
+	req.Header.Set("Cookie", "X-Cloudide-Session="+sess)
+	req.Header.Set("Referer", "https://www.trae.cn/")
+	req.Header.Set("Origin", "https://www.trae.cn")
+
+	data, err := c.doJSON(req)
+	if err != nil {
+		return fmt.Errorf("get_user_token: %w", err)
+	}
+	var resp struct {
+		Result struct {
+			Token               string `json:"Token"`
+			TokenExpireAt       int64  `json:"TokenExpireAt"`
+			TokenExpireDuration int64  `json:"TokenExpireDuration"`
+		} `json:"Result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("get_user_token parse: %w", err)
+	}
+	if resp.Result.Token == "" {
+		return fmt.Errorf("session_expired: no token in response — re-login required")
+	}
+	a.AccessToken = resp.Result.Token
+	if resp.Result.TokenExpireAt > 0 {
+		a.ExpiresAt = normalizeExpiresAt(resp.Result.TokenExpireAt)
+	} else if resp.Result.TokenExpireDuration > 0 {
+		a.ExpiresAt = time.Now().Add(time.Duration(resp.Result.TokenExpireDuration) * time.Second).Unix()
+	}
+	return nil
+}
+
 // refreshLocked 是 RefreshToken 的持锁内部实现；调用方必须已持有 a 写锁。
 // 任何失败路径都不改写 a 字段，保证旧 refreshToken 可重试。
+//
+// 续期优先级：refreshToken（ExchangeToken）→ session（GetUserToken）。
+// 前者会轮换、长期有效；后者可反复用、约 14 天。有哪个用哪个。
 func (c *Client) refreshLocked(a *auth.Auth) error {
 	if strings.TrimSpace(a.RefreshToken) == "" {
-		return fmt.Errorf("no refreshToken")
+		// 没有 refreshToken 时退回 session 续期（WebView 登录的场景）
+		if strings.TrimSpace(a.Session) != "" {
+			return c.renewBySessionLocked(a)
+		}
+		return fmt.Errorf("no refreshToken and no session")
 	}
 	host := a.ApiHost
 	if host == "" {

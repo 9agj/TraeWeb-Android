@@ -18,6 +18,10 @@ const (
 	EpChat          = "/api/agent/v3/llm_utils_chat"
 	EpModels        = "/api/ide/v1/get_detail_param"
 	EpExchange      = "/cloudide/api/v3/trae/oauth/ExchangeToken"
+	// EpUserToken 用 X-Cloudide-Session cookie 换新 JWT。
+	// 与 ExchangeToken 的区别：后者吃 refreshToken 并会轮换它，
+	// 前者吃 session、可反复调用 —— WebView 登录拿到的正是 session。
+	EpUserToken = "/cloudide/api/v3/common/GetUserToken"
 	EpUserInfo      = "/cloudide/api/v3/trae/GetUserInfo"
 	EpCheckinStatus = "/trae/api/v2/ug/checkin_credits/status"
 	EpCheckinClaim  = "/trae/api/v2/ug/checkin_credits/claim"

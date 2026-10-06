@@ -181,6 +181,20 @@
       }
     },
 
+    /**
+     * 静默读取登录态（不打开界面）。
+     * CookieManager 是进程级 API，只要本 App 曾登录过就能读到。
+     */
+    readCookie() {
+      if (!isNative || !Native.readWebCookie) return null;
+      try {
+        const o = JSON.parse(Native.readWebCookie());
+        return o && o.ok ? o : null;
+      } catch (e) {
+        return null;
+      }
+    },
+
     /** 等待用户在登录页完成（轮询到超时） */
     async wait(timeoutMs, onTick) {
       const limit = timeoutMs || 300000;

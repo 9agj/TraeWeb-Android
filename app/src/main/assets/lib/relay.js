@@ -117,6 +117,10 @@
       auth: {
         accessToken: acc.token,
         refreshToken: acc.refreshToken || '',
+        // session 是续期的关键：WebView 登录拿到的是它而非 refreshToken。
+        // 只推 token 的话，JWT（约 9.5 小时）一过期，relay 就无法续期，
+        // 上游全部 401、余额显示 0。带上 session 后 relay 能自行续期约 14 天。
+        session: acc.session || '',
         expiresAt: acc.expiresAt || 0,
         domain: 'trae.cn',
         apiHost: 'https://api.trae.com.cn',

@@ -330,13 +330,21 @@ func (p *Pool) List() []Status {
 
 func (p *Pool) statusOf(uid string, e *entry) Status {
 	now := time.Now()
+	cooling := !e.until.IsZero() && now.Before(e.until)
+	// 只在真正有问题时报原因。
+	// 冷却到期后 e.reason 仍是旧值（例如 "user disabled"），若照原样输出，
+	// 界面会在账号早已恢复正常后继续显示这条误导信息。
+	reason := e.reason
+	if !cooling && !e.disabled && e.enabled {
+		reason = ""
+	}
 	return Status{
 		UID:      uid,
 		Nickname: e.a.Nickname,
 		Credits:  e.credits,
-		Cooling:  !e.until.IsZero() && now.Before(e.until),
+		Cooling:  cooling,
 		Until:    e.until,
-		Reason:   e.reason,
+		Reason:   reason,
 		Disabled: e.disabled,
 		Enabled:  e.enabled,
 		ErrCount: e.errCount,
@@ -388,12 +396,19 @@ func (p *Pool) saveLocked() {
 	}
 	sf := stateFile{Accounts: map[string]stateEntry{}}
 	for uid, e := range p.byUID {
+		now := time.Now()
+		cooling := !e.until.IsZero() && now.Before(e.until)
+		reason := e.reason
+		if !cooling && !e.disabled && e.enabled {
+			// 账号已恢复正常 → 不再持久化陈旧原因，避免下次加载又读出来
+			reason = ""
+		}
 		se := stateEntry{
 			Credits:  e.credits,
 			Disabled: e.disabled,
-			Reason:   e.reason,
+			Reason:   reason,
 			Until:    e.until,
-			CoolKind: coolKindOf(e, time.Now()),
+			CoolKind: coolKindOf(e, now),
 		}
 		// 仅在软关闭时写 enabled=false；默认 true 用 omitempty 省略，旧版本读为 true。
 		if !e.enabled {

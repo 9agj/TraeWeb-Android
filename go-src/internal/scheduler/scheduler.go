@@ -94,7 +94,10 @@ func (s *Scheduler) RunCheckinNow() {
 			continue
 		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
-		if a == nil || a.RefreshTokenValue() == "" {
+		// 续期能力：refreshToken（ExchangeToken）或 session（GetUserToken）。
+		// 原来只认 refreshToken，导致 WebView 登录的账号（只有 session）
+		// 永远不会被续期，JWT 过期后整账号失效。
+		if a == nil || !a.CanRenew() {
 			continue
 		}
 		// 签到（status → 未签到则 claim）
@@ -127,7 +130,10 @@ func (s *Scheduler) RunRefreshNow() {
 			continue
 		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
-		if a == nil || a.RefreshTokenValue() == "" {
+		// 续期能力：refreshToken（ExchangeToken）或 session（GetUserToken）。
+		// 原来只认 refreshToken，导致 WebView 登录的账号（只有 session）
+		// 永远不会被续期，JWT 过期后整账号失效。
+		if a == nil || !a.CanRenew() {
 			continue
 		}
 		if !a.NeedsRefresh(s.cfg.RefreshSkew) {

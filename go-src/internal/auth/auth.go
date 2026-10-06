@@ -25,6 +25,12 @@ type Auth struct {
 
 	AccessToken  string // Cloud-IDE-JWT 头用
 	RefreshToken string // 每次 ExchangeToken 轮换
+	// Session 是 X-Cloudide-Session cookie 值（有效期约 14 天）。
+	// 浏览器/WebView 登录拿到的是它，而不是 refreshToken —— 两者不通用：
+	//   refreshToken → ExchangeToken 换新 token（会轮换）
+	//   session      → GetUserToken 换新 token（可反复用）
+	// 只有 refreshToken 时靠 ExchangeToken 续期；只有 session 时走 GetUserToken。
+	Session string
 	ExpiresAt    int64  // Unix 秒（accessToken 过期时刻）
 	Domain       string // "trae.cn"
 	ApiHost      string // "https://api.trae.com.cn"（ExchangeToken host）
@@ -62,6 +68,20 @@ func (a *Auth) RefreshTokenValue() string {
 	return a.RefreshToken
 }
 
+// SessionValue 返回 session 的读锁快照（session 不会轮换，但保持与 JWT() 一致的并发模型）。
+func (a *Auth) SessionValue() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Session
+}
+
+// CanRenew 报告该凭证是否具备续期能力（refreshToken 或 session 至少有一个）。
+func (a *Auth) CanRenew() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return strings.TrimSpace(a.RefreshToken) != "" || strings.TrimSpace(a.Session) != ""
+}
+
 // NeedsRefresh 报告 token 是否将在 within 内过期（或已过期/无 expiry）。
 func (a *Auth) NeedsRefresh(within time.Duration) bool {
 	a.mu.RLock()
@@ -85,6 +105,7 @@ func parseNested(raw []byte) (*Auth, error) {
 		Auth struct {
 			AccessToken  string `json:"accessToken"`
 			RefreshToken string `json:"refreshToken"`
+			Session      string `json:"session"`
 			ExpiresAt    int64  `json:"expiresAt"`
 			Domain       string `json:"domain"`
 			ApiHost      string `json:"apiHost"`
@@ -103,6 +124,7 @@ func parseNested(raw []byte) (*Auth, error) {
 	return &Auth{
 		AccessToken:  n.Auth.AccessToken,
 		RefreshToken: n.Auth.RefreshToken,
+		Session:      n.Auth.Session,
 		ExpiresAt:    n.Auth.ExpiresAt,
 		Domain:       n.Auth.Domain,
 		ApiHost:      n.Auth.ApiHost,
@@ -121,6 +143,7 @@ func parseFlat(raw []byte) (*Auth, error) {
 	var f struct {
 		AccessToken  string `json:"accessToken"`
 		RefreshToken string `json:"refreshToken"`
+		Session      string `json:"session"`
 		ExpiresAt    int64  `json:"expiresAt"`
 		Domain       string `json:"domain"`
 		ApiHost      string `json:"apiHost"`
@@ -136,6 +159,7 @@ func parseFlat(raw []byte) (*Auth, error) {
 	return &Auth{
 		AccessToken:  f.AccessToken,
 		RefreshToken: f.RefreshToken,
+		Session:      f.Session,
 		ExpiresAt:    f.ExpiresAt,
 		Domain:       f.Domain,
 		ApiHost:      f.ApiHost,
@@ -194,6 +218,7 @@ func (a *Auth) saveAtomicLocked() error {
 		"auth": map[string]any{
 			"accessToken":  a.AccessToken,
 			"refreshToken": a.RefreshToken,
+			"session":      a.Session,
 			"expiresAt":    a.ExpiresAt,
 			"domain":       a.Domain,
 			"apiHost":      a.ApiHost,
