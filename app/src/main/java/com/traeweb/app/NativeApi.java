@@ -323,15 +323,11 @@ public class NativeApi {
         } catch (Throwable ignored) { }
     }
 
-    /* -------------------------------------------------------- 接入服务 */
-
-    /** 接入服务状态：前端据此渲染面板 */
-    @JavascriptInterface
     /** 读取/设置局域网访问开关。JSON: {ok, lan, ip, port} */
     @JavascriptInterface
     public String relayLanAccess() {
         try {
-            RelayService r = RelayService.get(act);
+            RelayService r = RelayService.get(ctx);
             JSONObject o = new JSONObject();
             o.put("ok", true);
             o.put("lan", r.lanAccess());
@@ -347,7 +343,7 @@ public class NativeApi {
     @JavascriptInterface
     public String relaySetLanAccess(boolean on) {
         try {
-            RelayService r = RelayService.get(act);
+            RelayService r = RelayService.get(ctx);
             boolean changed = r.setLanAccess(on);
             // 改监听地址必须重启服务才生效
             if (changed) r.restart();
@@ -364,7 +360,8 @@ public class NativeApi {
         }
     }
 
-    /** 读取/设置局域网访问开关。JSON: {ok, lan, ip, port} */
+    /** 接入服务状态：前端据此渲染面板 */
+    @JavascriptInterface
     public String relayStatus() {
         try {
             RelayService r = RelayService.get(ctx);
