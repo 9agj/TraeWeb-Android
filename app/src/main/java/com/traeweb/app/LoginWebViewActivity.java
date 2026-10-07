@@ -62,6 +62,16 @@ public class LoginWebViewActivity extends Activity {
 
     /** 回调里捕获到的 refreshToken（若有） */
     private volatile String capturedRefreshToken = "";
+    /** 首次检测到 session 的时间；用于给 OAuth 回调留出宽限期 */
+    private volatile long firstSeenSessionAt = 0;
+    /**
+     * 拿到 session 后还要等多久才允许结束（毫秒）。
+     *
+     * 原因：session cookie 一出现就允许点「完成」，用户往往立刻点了 ——
+     * 而 OAuth 回调（refreshToken 的唯一来源）通常稍后才触发。
+     * 提前结束就只能拿到 session，多账号场景必然出问题。
+     */
+    private static final long CALLBACK_GRACE_MS = 12000;
     /** 回调原始 URL，便于排查 */
     private volatile String capturedCallback = "";
     private static final String SESSION_COOKIE = "X-Cloudide-Session";
@@ -170,6 +180,7 @@ public class LoginWebViewActivity extends Activity {
                 // OAuth 回调：就地解析出 refreshToken，不真正加载（无需本地监听端口）
                 if (u.startsWith(CALLBACK_URL)) {
                     captureFromCallback(u);
+                    firstSeenSessionAt = 0;   // 已拿到回调，无需再等
                     runOnUiThread(() -> {
                         statusView.setText(capturedRefreshToken.isEmpty()
                                 ? "✓ 已检测到登录凭证"
@@ -269,13 +280,24 @@ public class LoginWebViewActivity extends Activity {
                 statusView.setTextColor(Color.parseColor("#3fb950"));
                 doneButton.setEnabled(true);
             } else if (hasSession) {
-                statusView.setText("✓ 已检测到登录凭证，点上方按钮完成");
-                statusView.setTextColor(Color.parseColor("#3fb950"));
-                doneButton.setEnabled(true);
+                if (firstSeenSessionAt == 0) firstSeenSessionAt = System.currentTimeMillis();
+                long waited = System.currentTimeMillis() - firstSeenSessionAt;
+                if (waited < CALLBACK_GRACE_MS) {
+                    // 给 OAuth 回调留时间 —— 它才是 refreshToken 的来源
+                    statusView.setText("已登录，正在等待授权回调（约 "
+                            + ((CALLBACK_GRACE_MS - waited) / 1000 + 1) + " 秒）…");
+                    statusView.setTextColor(Color.parseColor("#d29922"));
+                    doneButton.setEnabled(false);
+                } else {
+                    statusView.setText("✓ 已检测到登录凭证（未收到授权回调），点上方按钮完成");
+                    statusView.setTextColor(Color.parseColor("#d29922"));
+                    doneButton.setEnabled(true);
+                }
             } else {
                 statusView.setText("尚未检测到登录凭证，请继续在页面内完成登录。");
                 statusView.setTextColor(Color.parseColor("#8b949e"));
                 doneButton.setEnabled(false);
+                firstSeenSessionAt = 0;
             }
         } catch (Throwable t) {
             statusView.setText("检测登录态失败：" + t.getMessage());

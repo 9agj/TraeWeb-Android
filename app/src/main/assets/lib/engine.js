@@ -457,6 +457,15 @@
     diag('login', '登录页返回: session=' + (session ? session.length + '字符' : '空')
       + ' token=' + (token ? token.length + '字符' : '空')
       + ' refreshToken=' + (refreshToken ? refreshToken.length + '字符' : '空'));
+    // 关键排查信息：OAuth 回调有没有触发、最终停在哪个页面。
+    // refreshToken 只可能来自回调 URL，所以这两个值能直接定位问题。
+    diag('login', '回调 URL=' + ((r.callbackUrl && r.callbackUrl.slice(0, 90)) || '（未触发）'));
+    diag('login', '最终页面=' + ((r.pageUrl && r.pageUrl.slice(0, 110)) || '（空）'));
+    try {
+      const dump = typeof r.storage === 'string' ? JSON.parse(r.storage || '{}') : (r.storage || {});
+      const lk = dump && dump.local ? Object.keys(dump.local) : [];
+      diag('login', '页面存储键(' + lk.length + '): ' + lk.slice(0, 20).join(','));
+    } catch (e) { /* 忽略 */ }
 
     // session 与 refreshToken 有一即可（OAuth 流程主要产物是 refreshToken）
     if (!session && !refreshToken) {
