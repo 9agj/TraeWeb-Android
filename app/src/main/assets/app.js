@@ -128,7 +128,10 @@ function renderAccounts() {
   accounts.forEach((a) => {
     const root = box.querySelector('[data-id="' + a.id + '"]');
     if (!root) return;
-    root.querySelector('[data-act="checkin"]').addEventListener('click', () => doCheckin(a.id));
+    const rl = root.querySelector('[data-act="relogin"]');
+    if (rl) rl.addEventListener('click', () => doRelogin(a.id));
+    const ck = root.querySelector('[data-act="checkin"]');
+    if (ck) ck.addEventListener('click', () => doCheckin(a.id));
     root.querySelector('[data-act="refresh"]').addEventListener('click', () => doRefresh(a.id));
     root.querySelector('[data-act="status"]').addEventListener('click', () => doStatus(a.id));
     root.querySelector('[data-act="usage"]').addEventListener('click', () => openUsage(a));
@@ -160,6 +163,11 @@ function accountRow(a) {
   const errLine = a.lastError
     ? '<div class="acc-meta" style="color:var(--err);margin-top:4px">' + esc(a.lastError) + '</div>' : '';
 
+  // 凭证失效 → 签到必然失败，按钮换成「重新登录」给条出路。
+  // 判据：没有 session/refreshToken，或已标记 token 失效。
+  const needsLogin = !a.hasSession || a.tokenAlive === false
+    || (a.lastError && /失效|过期|重新登录/.test(a.lastError));
+
   return '' +
   '<div class="account ' + (a.enabled ? '' : 'disabled') + ' ' + (a.lastError ? 'err' : '') + '" data-id="' + esc(a.id) + '">' +
     '<div class="avatar">' + (a.avatarUrl
@@ -172,7 +180,9 @@ function accountRow(a) {
     '<div class="acc-credits">' + creditHtml + '</div>' +
     '<div class="acc-actions">' +
       '<label class="switch" title="启用 / 停用"><input type="checkbox" data-act="toggle" ' + (a.enabled ? 'checked' : '') + '><span class="slider"></span></label>' +
-      '<button class="btn small primary" data-act="checkin" ' + (isBusy ? 'disabled' : '') + '>' + (isBusy ? '…' : '签到') + '</button>' +
+      (needsLogin
+        ? '<button class="btn small primary" data-act="relogin">重新登录</button>'
+        : '<button class="btn small primary" data-act="checkin" ' + (isBusy ? 'disabled' : '') + '>' + (isBusy ? '…' : '签到') + '</button>') +
       '<button class="btn small ghost" data-act="status">状态</button>' +
       '<button class="btn small ghost" data-act="usage">用量</button>' +
       '<button class="btn small ghost" data-act="refresh" ' + (isBusy ? 'disabled' : '') + '>刷新</button>' +
@@ -183,6 +193,38 @@ function accountRow(a) {
 }
 
 /* ───────────────────────── 账号操作 ───────────────────────── */
+
+/**
+ * 重新登录某个账号。
+ *
+ * 场景：该账号的 session 被服务端作废（例如为了登录别的账号而在
+ * trae.cn 登出过），此时签到/刷新都必然 401，只能重新走一次登录。
+ *
+ * 走 OAuth 授权流程，会拿到 refreshToken —— 它按账号独立、登出不作废，
+ * 之后再登别的账号就不会把本账号弄掉了。
+ */
+async function doRelogin(id) {
+  const a = STATE.accounts.find((x) => x.id === id);
+  const who = (a && (a.screenName || a.name)) || '该账号';
+  logLine('[' + who + '] 打开登录页，请用「这个账号」完成登录…', 'info');
+  busy(id, true); renderAccounts();
+
+  const r = await E.addAccountByWebLogin((ms) => {
+    if (ms && ms.text) logLine('[' + who + '] ' + ms.text, 'info');
+  });
+  busy(id, false);
+
+  if (!r.ok) {
+    logLine('[' + who + '] 重新登录失败：' + r.error, 'err');
+    toast('重新登录失败：' + r.error, 'err');
+    renderAccounts();
+    return;
+  }
+  // 登录后可能是更新了已有账号（同 uid），也可能是新增了另一个账号
+  logLine('[' + who + '] 登录完成：' + (r.refreshed ? '已更新凭证' : '新增账号'), 'ok');
+  toast(r.refreshed ? '凭证已更新' : '已新增账号', 'ok');
+  loadState();
+}
 
 async function doCheckin(id) {
   const a = STATE.accounts.find((x) => x.id === id);
@@ -803,23 +845,29 @@ function boot() {
   // 不主动续期的话，几小时后上游就会全部 401、余额显示 0。
   // 这里直接读 WebView 的 cookie 换新 JWT（不弹界面），并推给 relay。
   if (native) {
+    // 逐个账号续期，各自用自己的凭证。
+    //
+    // 不再用 renewSilently —— 它读 WebView 的 cookie，而那个罐里只有
+    // 「最后登录那个号」的 session，多账号时会漏掉其余账号，还可能写错账号。
     const ensureFresh = async (label) => {
       try {
         const list = E.listAccounts();
         if (!list.length) return;
         const now = Math.floor(Date.now() / 1000);
         const need = list.some((a) => {
+          if (a.enabled === false) return false;
           const exp = window.TraeApi.parseJwtExp(a.token);
           return !exp || (exp - now) < 7200;   // 2 小时内过期
         });
         if (!need) return;
-        logLine((label || '') + '检测到凭证即将过期，正在自动续期…', 'warn');
-        const r = await E.renewSilently();
-        if (r.ok) {
-          logLine('凭证已自动续期' + (r.pushed ? '并同步到接入服务' : '（同步失败）'), r.pushed ? 'ok' : 'err');
+        logLine((label || '') + '检测到凭证即将过期，正在逐号续期…', 'warn');
+        const r = await E.renewAll({ silent: true });
+        if (r.renewed > 0) {
+          logLine('已续期 ' + r.renewed + ' 个账号'
+            + (r.failed ? '，' + r.failed + ' 个失败' : ''), r.failed ? 'warn' : 'ok');
           loadState();
-        } else {
-          logLine('自动续期未成功：' + r.error, 'warn');
+        } else if (r.failed > 0) {
+          logLine('续期未成功（' + r.failed + ' 个账号需要重新登录）', 'warn');
         }
       } catch (e) { /* 静默 */ }
     };

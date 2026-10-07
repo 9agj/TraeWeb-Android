@@ -44,7 +44,26 @@ public class LoginWebViewActivity extends Activity {
 
     public static final String EXTRA_RESULT = "login_result";
 
-    private static final String START_URL = "https://www.trae.cn/";
+    /** 回调地址：WebView 内拦截，不真正请求（避免依赖本地监听端口） */
+    private static final String CALLBACK_URL = "http://127.0.0.1:18081/authorize";
+
+    /**
+     * 登录入口改为 OAuth 授权链接（而非普通的 trae.cn 首页）。
+     *
+     * 为什么必须这样：普通登录只会拿到 X-Cloudide-Session，而 session 存在
+     * WebView 的 cookie 罐里 —— 一个罐只能装一个号。要登第二个号就得先登出
+     * 第一个，**登出会让服务端作废前一个 session**，于是第一个号的凭证直接
+     * 失效。这就是「登第二个号弄掉第一个号」的根因。
+     *
+     * 走 OAuth 授权流程时，回调会带回 refreshToken：它按账号独立、长期有效、
+     * 登出不作废。有了它每个账号可以各自续期，互不干扰。
+     */
+    private static final String AUTH_BASE = "https://www.trae.cn/authorization";
+
+    /** 回调里捕获到的 refreshToken（若有） */
+    private volatile String capturedRefreshToken = "";
+    /** 回调原始 URL，便于排查 */
+    private volatile String capturedCallback = "";
     private static final String SESSION_COOKIE = "X-Cloudide-Session";
 
     private WebView webView;
@@ -147,23 +166,109 @@ public class LoginWebViewActivity extends Activity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
-                // 全部留在本 WebView 内，登录态才不会跑出去
+                String u = req.getUrl() == null ? "" : req.getUrl().toString();
+                // OAuth 回调：就地解析出 refreshToken，不真正加载（无需本地监听端口）
+                if (u.startsWith(CALLBACK_URL)) {
+                    captureFromCallback(u);
+                    runOnUiThread(() -> {
+                        statusView.setText(capturedRefreshToken.isEmpty()
+                                ? "✓ 已检测到登录凭证"
+                                : "✓ 已拿到长期凭证（refreshToken），点上方按钮完成");
+                        statusView.setTextColor(Color.parseColor("#3fb950"));
+                        doneButton.setEnabled(true);
+                    });
+                    return true;
+                }
+                // 其余全部留在本 WebView 内，登录态才不会跑出去
                 return false;
             }
         });
 
-        webView.loadUrl(START_URL);
+        webView.loadUrl(buildAuthUrl());
+    }
+
+
+    /** 构造 OAuth 授权链接（参数与 NativeApi.buildAuthUrl 对齐） */
+    private String buildAuthUrl() {
+        java.util.UUID u = java.util.UUID.randomUUID();
+        String mid = u.toString().replace("-", "").substring(0, 32);
+        String did = String.format("%019d", Math.abs(u.getMostSignificantBits() % 1000000000000000000L));
+        try {
+            StringBuilder sb = new StringBuilder(AUTH_BASE).append("?");
+            sb.append("login_version=1");
+            sb.append("&auth_from=solo");
+            sb.append("&login_channel=native_ide");
+            sb.append("&plugin_version=2.3.24254");
+            sb.append("&auth_type=local");
+            sb.append("&client_id=").append(java.net.URLEncoder.encode("ono9krqynydwx5", "UTF-8"));
+            sb.append("&redirect=0");
+            sb.append("&login_trace_id=").append(java.net.URLEncoder.encode(u.toString(), "UTF-8"));
+            sb.append("&auth_callback_url=").append(java.net.URLEncoder.encode(CALLBACK_URL, "UTF-8"));
+            sb.append("&machine_id=").append(mid);
+            sb.append("&device_id=").append(did);
+            sb.append("&x_device_id=").append(did);
+            sb.append("&x_machine_id=").append(mid);
+            sb.append("&x_device_brand=").append(java.net.URLEncoder.encode("Xiaomi", "UTF-8"));
+            sb.append("&x_device_type=android");
+            sb.append("&x_os_version=").append(java.net.URLEncoder.encode(android.os.Build.VERSION.RELEASE, "UTF-8"));
+            sb.append("&x_env=");
+            sb.append("&x_app_version=0.1.7");
+            sb.append("&x_app_type=stable");
+            sb.append("&hide_saas_login=true");
+            return sb.toString();
+        } catch (Throwable t) {
+            return "https://www.trae.cn/";   // 兜底：退回普通登录
+        }
     }
 
     /**
-     * 检查登录态：只要 cookie jar 里出现了 X-Cloudide-Session，就认为已登录。
+     * 从回调 URL 里取 refreshToken。
+     *
+     * 回调形如：
+     *   http://127.0.0.1:18081/authorize?refreshToken=xxx&userJwt=yyy&...
+     * 参数可能整体包在 data= 里（JSON），两种形态都试。
+     */
+    private void captureFromCallback(String url) {
+        capturedCallback = url;
+        try {
+            String q = url;
+            int p = q.indexOf('?');
+            if (p >= 0) q = q.substring(p + 1);
+            int h = q.indexOf('#');
+            if (h >= 0) q = q.substring(0, h);
+            for (String kv : q.split("&")) {
+                int eq = kv.indexOf('=');
+                if (eq <= 0) continue;
+                String k = kv.substring(0, eq);
+                String v = java.net.URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                if ("refreshToken".equalsIgnoreCase(k) && !v.isEmpty()) {
+                    capturedRefreshToken = v;
+                }
+            }
+            // 参数可能被塞进 data= 的 JSON 里
+            if (capturedRefreshToken.isEmpty()) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("\"refreshToken\"\\s*:\\s*\"([^\"]+)\"")
+                        .matcher(java.net.URLDecoder.decode(q, "UTF-8"));
+                if (m.find()) capturedRefreshToken = m.group(1);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** 检查登录态：只要 cookie jar 里出现了 X-Cloudide-Session，就认为已登录。
      * 同时把 localStorage 里的 Cloud-IDE-Token 一并取出（部分接口需要）。
      */
     private void checkLoginState() {
         try {
             String cookies = CookieManager.getInstance().getCookie("https://www.trae.cn");
             String session = extractCookie(cookies, SESSION_COOKIE);
-            if (session != null && !session.isEmpty()) {
+            boolean hasSession = session != null && !session.isEmpty();
+            boolean hasRefresh = capturedRefreshToken != null && !capturedRefreshToken.isEmpty();
+            if (hasRefresh) {
+                statusView.setText("✓ 已拿到长期凭证（refreshToken），点上方按钮完成");
+                statusView.setTextColor(Color.parseColor("#3fb950"));
+                doneButton.setEnabled(true);
+            } else if (hasSession) {
                 statusView.setText("✓ 已检测到登录凭证，点上方按钮完成");
                 statusView.setTextColor(Color.parseColor("#3fb950"));
                 doneButton.setEnabled(true);
@@ -188,22 +293,57 @@ public class LoginWebViewActivity extends Activity {
         }
 
         final String session = extractCookie(cookies, SESSION_COOKIE);
-        if (session == null || session.isEmpty()) {
-            Toast.makeText(this, "未找到 " + SESSION_COOKIE + "，请确认已登录", Toast.LENGTH_LONG).show();
+        // session 与 refreshToken 二者有一即可：
+        //   - 普通登录页 → 只有 session
+        //   - OAuth 授权流程 → refreshToken 是主要产物，session 可能没有
+        // 之前强制要求 session，走 OAuth 时会被误判成「未登录」。
+        if ((session == null || session.isEmpty())
+                && (capturedRefreshToken == null || capturedRefreshToken.isEmpty())) {
+            Toast.makeText(this, "未检测到登录凭证，请确认已完成登录", Toast.LENGTH_LONG).show();
             return;
         }
 
-        // 再从页面里取一次 Cloud-IDE-Token（localStorage，明文）
-        webView.evaluateJavascript(
-                "(function(){try{return localStorage.getItem('Cloud-IDE-Token')||'';}catch(e){return '';}})()",
-                value -> {
-                    String token = unquoteJson(value);
+        // 一次性把页面里的凭据全取出来。
+        //
+        // 为什么不能只要 session：WebView 只有一个 cookie 罐，装的是「最后登录
+        // 那个号」。要登第二个号就得先登出第一个，而**登出会让服务端作废前一个
+        // session** —— 所以靠 session 做多账号，账号之间必然互相踩。
+        //
+        // refreshToken 不同：按账号独立、长期有效、登出不作废，可以拿它单独续期。
+        // 这里把 localStorage / sessionStorage / 当前 URL 全部捞出来，
+        // 由前端挑出 refreshToken（键名不确定，只能全量取回再筛）。
+        final String dumpJs =
+                "(function(){try{"
+                + "var o={local:{},session:{}};"
+                + "try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);"
+                + "o.local[k]=localStorage.getItem(k);}}catch(e){}"
+                + "try{for(var j=0;j<sessionStorage.length;j++){var k2=sessionStorage.key(j);"
+                + "o.session[k2]=sessionStorage.getItem(k2);}}catch(e){}"
+                + "o.url=location.href;"
+                + "return JSON.stringify(o);"
+                + "}catch(e){return '{}';}})()";
+
+        webView.evaluateJavascript(dumpJs, value -> {
+                    String dump = unquoteJson(value);
+                    String token = "";
+                    try {
+                        JSONObject all = new JSONObject(dump == null || dump.isEmpty() ? "{}" : dump);
+                        JSONObject local = all.optJSONObject("local");
+                        if (local != null) token = local.optString("Cloud-IDE-Token", "");
+                    } catch (Throwable ignored) { }
                     try {
                         JSONObject o = new JSONObject();
                         o.put("ok", true);
                         o.put("session", session);
                         o.put("token", token == null ? "" : token);
                         o.put("cookies", cookies == null ? "" : cookies);
+                        // 全量页面存储 + 当前 URL：前端据此筛出 refreshToken
+                        o.put("storage", dump == null ? "" : dump);
+                        String cur = webView.getUrl();
+                        o.put("pageUrl", cur == null ? "" : cur);
+                        // OAuth 回调里直接拿到的 refreshToken（最可靠的一路）
+                        o.put("refreshToken", capturedRefreshToken == null ? "" : capturedRefreshToken);
+                        o.put("callbackUrl", capturedCallback == null ? "" : capturedCallback);
 
                         String payload = o.toString();
                         // 落盘：跨 Activity 回传受 launchMode / 进程回收影响，存盘更稳。

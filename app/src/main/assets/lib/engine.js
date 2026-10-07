@@ -329,8 +329,10 @@
     try {
       const res = await R.importAccount({
         token: cur.token,
-        // session 一并推送：relay 靠它自行续期（约 14 天），
-        // 否则 JWT 一过期 relay 就无能为力。
+        // refreshToken 优先：它按账号独立、登出不作废，relay 用它做
+        // ExchangeToken 续期最稳。多账号场景下这是唯一可靠的续期依据。
+        refreshToken: cur.refreshToken || '',
+        // session 作为兜底（约 14 天有效，但登出即失效）
         session: cur.session || '',
         deviceId: cur.deviceId || '',
         machineId: cur.deviceId || '',
@@ -377,6 +379,60 @@
    *
    * 所以登录必须在 App 内完成。
    */
+
+  /**
+   * 从登录页的抓取结果里找出 refreshToken。
+   *
+   * 为什么需要它：WebView 只有一个 cookie 罐，装的是「最后登录那个号」的
+   * session；要登第二个号必须先登出第一个，而登出会**让服务端作废前一个
+   * session**。所以靠 session 做多账号，账号之间必然互相踩。
+   *
+   * refreshToken 按账号独立、长期有效、登出不作废 —— 有了它每个账号就能
+   * 各自续期，互不干扰。
+   *
+   * 键名不确定，所以全量扫一遍（localStorage / sessionStorage / URL 参数）。
+   */
+  function extractRefreshToken(r) {
+    if (!r) return '';
+    // ⓪ Java 侧从 OAuth 回调直接解析出来的（最可靠）
+    if (r.refreshToken && typeof r.refreshToken === 'string') return r.refreshToken;
+    // ① URL 参数（OAuth 回调会带 refreshToken）
+    try {
+      const u = r.pageUrl || '';
+      const m = u.match(/[?&#]refreshToken=([^&#]+)/i);
+      if (m && m[1]) return decodeURIComponent(m[1]);
+    } catch (e) { /* 忽略 */ }
+
+    // ② 页面存储：键名含 refresh 的，取字符串值
+    let dump = null;
+    try { dump = typeof r.storage === 'string' ? JSON.parse(r.storage) : r.storage; }
+    catch (e) { dump = null; }
+    if (!dump) return '';
+
+    for (const scope of ['local', 'session']) {
+      const bag = dump[scope];
+      if (!bag || typeof bag !== 'object') continue;
+      for (const k of Object.keys(bag)) {
+        if (!/refresh/i.test(k)) continue;
+        let v = bag[k];
+        if (typeof v !== 'string' || !v) continue;
+        // 有些键存的是 JSON，里面还有一层
+        if (v.trim().startsWith('{')) {
+          try {
+            const inner = JSON.parse(v);
+            for (const ik of Object.keys(inner)) {
+              if (/refresh/i.test(ik) && typeof inner[ik] === 'string' && inner[ik]) {
+                return inner[ik];
+              }
+            }
+          } catch (e) { /* 不是 JSON，继续 */ }
+        }
+        return v;
+      }
+    }
+    return '';
+  }
+
   async function addAccountByWebLogin(onTick) {
     const WL = window.NativeBridge && window.NativeBridge.WebLogin;
     if (!WL || !WL.available) {
@@ -397,27 +453,54 @@
 
     const session = r.session || '';
     let token = r.token || '';
+    const refreshToken = extractRefreshToken(r);
     diag('login', '登录页返回: session=' + (session ? session.length + '字符' : '空')
-      + ' token=' + (token ? token.length + '字符' : '空'));
+      + ' token=' + (token ? token.length + '字符' : '空')
+      + ' refreshToken=' + (refreshToken ? refreshToken.length + '字符' : '空'));
 
-    if (!session) {
-      return { ok: false, error: '未拿到 X-Cloudide-Session' };
+    // session 与 refreshToken 有一即可（OAuth 流程主要产物是 refreshToken）
+    if (!session && !refreshToken) {
+      return { ok: false, error: '未拿到任何登录凭证（session 与 refreshToken 都为空）' };
     }
 
     // 拿 session 换一个新鲜的 JWT（比 localStorage 里的更可靠）
-    const t = await T.getToken(session);
-    if (t.ok) {
-      token = t.token;
-      diag('login', '用 session 换到新 JWT（' + token.length + '字符）');
+    if (session) {
+      const t = await T.getToken(session);
+      if (t.ok) {
+        token = t.token;
+        diag('login', '用 session 换到新 JWT（' + token.length + '字符）');
+      } else {
+        diag('login', 'session 换 JWT 失败：' + t.error + '（回退用 localStorage 的 token）');
+      }
     } else {
-      diag('login', 'session 换 JWT 失败：' + t.error + '（回退用 localStorage 的 token）');
+      diag('login', '无 session（OAuth 流程），改用 refreshToken 通路');
     }
 
+    if (!token && !refreshToken) {
+      return { ok: false, error: '既没有换到 JWT，也没有 refreshToken 可用' };
+    }
+    // 没有 token 但有 refreshToken：交给接入服务做 ExchangeToken 换新 token。
+    // 这条通路不依赖 WebView 的 cookie，正是多账号能共存的关键。
+    let uidFromRelay = '';
+    if (!token && refreshToken) {
+      const ex = await exchangeRefreshToken(refreshToken, {});
+      if (ex && ex.ok) {
+        diag('login', '已通过 refreshToken 换取凭证');
+        // 接入服务会回传它解析出的 uid —— 本地没 token 时靠它认账号
+        const rr = (ex.result && (ex.result.result || ex.result)) || {};
+        if (rr.uid) uidFromRelay = String(rr.uid);
+        const again = session ? await T.getToken(session) : { ok: false };
+        if (again.ok) token = again.token;
+      } else {
+        diag('login', 'refreshToken 交换失败：' + ((ex && ex.error) || '未知'));
+      }
+    }
     if (!token) {
-      return { ok: false, error: '既没有换到 JWT，也没有可用的本地 token' };
+      // 仍无 token：至少把 refreshToken 落到账号上，接入服务侧可用
+      diag('login', '本地无 token，仅保存 refreshToken（接入服务可用）');
     }
 
-    const uid = T.parseAccountUid(token) || null;
+    const uid = T.parseAccountUid(token) || uidFromRelay || null;
     const exp = T.parseJwtExp(token);
     const dev = T.randomDeviceId();
 
@@ -426,6 +509,7 @@
     if (dup) {
       updateAccount(dup.id, {
         session: session,
+        refreshToken: refreshToken || dup.refreshToken || null,
         token: token,
         tokenUpdatedAt: new Date().toISOString(),
         tokenAlive: true,
@@ -443,7 +527,7 @@
       id: uuid(),
       name: null,
       session: session,
-      refreshToken: null,
+      refreshToken: refreshToken || null,
       token: token,
       tokenUpdatedAt: new Date().toISOString(),
       deviceId: dev,
@@ -715,6 +799,77 @@
    * 用于启动时和定时任务 —— 用户无需任何操作，凭证自动保持新鲜。
    * 若 WebView 里没有登录态（cookie 已过期），返回失败，由用户手动登录。
    */
+
+  /**
+   * 逐个账号续期 —— 每个账号只用自己的凭证。
+   *
+   * 这是多账号能共存的关键。原来的 renewSilently 读的是 WebView 的 cookie，
+   * 而那个罐里只有「最后登录那个号」的 session —— 于是只有最后那个号能续期，
+   * 其余账号的凭证一旦过期就再也救不回来。
+   *
+   * 现在改成：遍历账号，各自优先用 refreshToken（按账号独立、登出不作废），
+   * 没有 refreshToken 才退回自己的 session。全程不碰 WebView cookie，
+   * 因此不会出现「A 号的凭证写到 B 号身上」。
+   */
+  async function renewAll(opts) {
+    const silent = !opts || opts.silent !== false;
+    const list = listAccounts();
+    const out = { total: list.length, renewed: 0, failed: 0, details: [] };
+
+    for (const a of list) {
+      if (a.enabled === false) continue;
+      const before = a.token;
+      const exp = T.parseJwtExp(before);
+      const now = Math.floor(Date.now() / 1000);
+      // 还剩 2 小时以上就不动它
+      if (exp && (exp - now) > 7200) {
+        out.details.push({ uid: a.accountUid, action: 'skip', reason: '未临近过期' });
+        continue;
+      }
+
+      let ok = false;
+      let how = '';
+
+      // 路径一：refreshToken（最可靠，登出不作废）
+      if (a.refreshToken) {
+        const ex = await exchangeRefreshToken(a.refreshToken, { uid: a.accountUid || '' });
+        if (ex.ok) { ok = true; how = 'refreshToken'; }
+      }
+
+      // 路径二：自己的 session
+      if (!ok && a.session) {
+        const r = await T.getToken(a.session);
+        if (r.ok) {
+          updateAccount(a.id, {
+            token: r.token,
+            tokenUpdatedAt: new Date().toISOString(),
+            accountUid: T.parseAccountUid(r.token) || a.accountUid || null,
+            tokenAlive: true,
+            lastError: null,
+          });
+          ok = true; how = 'session';
+        } else {
+          updateAccount(a.id, {
+            tokenAlive: false,
+            lastError: r.error,
+          });
+        }
+      }
+
+      if (ok) {
+        out.renewed++;
+        await pushToRelay(a.id, { silent: true });
+      } else {
+        out.failed++;
+      }
+      out.details.push({ uid: a.accountUid, action: ok ? 'renewed' : 'failed', how: how });
+      if (!silent) {
+        diag('renew', (a.accountUid || a.id) + ' -> ' + (ok ? '已续期(' + how + ')' : '续期失败'));
+      }
+    }
+    return out;
+  }
+
   async function renewSilently() {
     const WL = window.NativeBridge && window.NativeBridge.WebLogin;
     if (!WL || !WL.readCookie) return { ok: false, error: '仅支持在 APK 内使用' };
@@ -726,16 +881,19 @@
     if (!t.ok) return { ok: false, error: t.error };
 
     const uid = T.parseAccountUid(t.token) || null;
-    const accounts = listAccounts();
-    const acc = uid ? findDuplicateByUid(uid) : (accounts[0] || null);
-    if (!acc) return { ok: false, error: '没有可更新的账号' };
+    // 必须按 uid 精确定位。之前 uid 取不到时会退到 accounts[0]，
+    // 那会把「这个号的 session」写到「另一个号」身上，直接毁掉那个账号。
+    // 定位不到就放弃，宁可这次不续期。
+    if (!uid) return { ok: false, error: '无法从凭证解析账号 UID，跳过续期（避免写错账号）' };
+    const acc = findDuplicateByUid(uid);
+    if (!acc) return { ok: false, error: '该账号尚未添加，跳过续期' };
 
     updateAccount(acc.id, {
       session: c.session,
       token: t.token,
       tokenUpdatedAt: new Date().toISOString(),
       tokenAlive: true,
-      accountUid: uid || acc.accountUid,
+      accountUid: uid,
       lastError: null,
     });
     diag('renew', '静默续期成功: ' + acc.id);
@@ -768,9 +926,9 @@
     if (!t.ok) return { ok: false, error: t.error };
 
     const uid = T.parseAccountUid(t.token) || null;
-    const accounts = listAccounts();
-    const acc = uid ? findDuplicateByUid(uid) : accounts[0];
-    if (!acc) return { ok: false, error: '没有可更新的账号' };
+    if (!uid) return { ok: false, error: '无法从凭证解析账号 UID，跳过续期（避免写错账号）' };
+    const acc = findDuplicateByUid(uid);
+    if (!acc) return { ok: false, error: '该账号尚未添加，跳过续期' };
 
     updateAccount(acc.id, {
       session: r.session,
@@ -985,6 +1143,7 @@
     pushAllToRelay: pushAllToRelay,
     refreshFromWebView: refreshFromWebView,
     renewSilently: renewSilently,
+    renewAll: renewAll,
     getGithub: getGithub,
     setGithub: setGithub,
     getSettings: getSettings,
